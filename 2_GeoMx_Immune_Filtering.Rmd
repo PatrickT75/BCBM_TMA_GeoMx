@@ -1,0 +1,291 @@
+---
+title: "GeoMx_Immune_Filtering"
+output: html_document
+date: "2024-01-25"
+---
+
+```{r setup, include=FALSE}
+load("all_qc.RData")
+
+library(NanoStringNCTools)
+library(GeomxTools)
+library(GeoMxWorkflows)
+library(knitr)
+library(dplyr)
+library(ggforce)
+library(readxl)
+library(reshape2)
+library(tidyverse)
+library(pheatmap)
+library(lmerTest)
+library(reshape2)
+library(cowplot)
+
+pseudocount <- 1
+
+log_adj <- function(x){
+  return(log2(x + pseudocount))
+}
+
+calc_CV <- function(x) {sd(x) / mean(x)}
+```
+
+## Immune-Rich
+
+```{r Immune_LOQ}
+immune_demoData <- target_demoData[, pData(target_demoData)$Comment == "Immune-Rich" & pData(target_demoData)$Flag == "PASS"]
+cutoff <- 2
+minLOQ <- 2
+
+# Calculate LOQ per module tested
+LOQ <- data.frame(row.names = colnames(immune_demoData))
+for(module in modules) {
+    vars <- paste0(c("NegGeoMean_", "NegGeoSD_"),
+                   module)
+    if(all(vars[1:2] %in% colnames(pData(immune_demoData)))) {
+        LOQ[, module] <-
+            pmax(minLOQ,
+                 pData(immune_demoData)[, vars[1]] * 
+                     pData(immune_demoData)[, vars[2]] ^ cutoff)
+    }
+}
+pData(immune_demoData)$LOQ <- LOQ
+
+LOQ_Mat <- c()
+for(module in modules) {
+    ind <- fData(immune_demoData)$Module == module
+    Mat_i <- t(esApply(immune_demoData[ind, ], MARGIN = 1,
+                       FUN = function(x) {
+                           x > LOQ[, module]
+                       }))
+    LOQ_Mat <- rbind(LOQ_Mat, Mat_i)
+}
+# ensure ordering since this is stored outside of the geomxSet
+LOQ_Mat <- LOQ_Mat[fData(immune_demoData)$TargetName, ]
+```
+
+```{r Immune_segment_filtering}
+# Save detection rate information to pheno data
+pData(immune_demoData)$GenesDetected <- 
+    colSums(LOQ_Mat, na.rm = TRUE)
+pData(immune_demoData)$GeneDetectionRate <-
+    pData(immune_demoData)$GenesDetected / nrow(immune_demoData)
+
+# Determine detection thresholds: 1%, 5%, 10%, 15%, >15%
+pData(immune_demoData)$DetectionThreshold <- 
+    cut(pData(immune_demoData)$GeneDetectionRate,
+        breaks = c(0, 0.01, 0.05, 0.1, 0.15, 1),
+        labels = c("<1%", "1-5%", "5-10%", "10-15%", ">15%"))
+
+# stacked bar plot of different cut points (1%, 5%, 10%, 15%)
+ggplot(pData(immune_demoData),
+       aes(x = DetectionThreshold)) +
+    geom_bar(aes(fill = SITE)) +
+    geom_text(stat = "count", aes(label = ..count..), vjust = -0.5) +
+    theme_bw() +
+    scale_y_continuous(expand = expansion(mult = c(0, 0.1))) +
+    labs(x = "Gene Detection Rate",
+         y = "Segments, #",
+         fill = "Segment Type")
+
+# ggsave("figs/strict-immune-segment-detection-rate.png")
+dplyr::count(subset(pData(immune_demoData)), Comment, DetectionThreshold)
+```
+
+```{r Immune_gene_filtering}
+tdd <- immune_demoData[, pData(immune_demoData)$GeneDetectionRate >= 0.1]
+count(pData(immune_demoData[, pData(immune_demoData)$GeneDetectionRate < 0.1]), Comment, SITE)
+
+# Calculate detection rate:
+LOQ_Mat <- LOQ_Mat[, colnames(tdd)]
+fData(tdd)$DetectedSegments <- rowSums(LOQ_Mat, na.rm = TRUE)
+fData(tdd)$DetectionRate <-
+    fData(tdd)$DetectedSegments / nrow(pData(tdd))
+
+plot_detect <- data.frame(Freq = c(1, 5, 10, 20, 30, 50))
+plot_detect$Number <-
+    unlist(lapply(c(0.01, 0.05, 0.1, 0.2, 0.3, 0.5),
+                  function(x) {sum(fData(tdd)$DetectionRate >= x)}))
+plot_detect$Rate <- plot_detect$Number / nrow(fData(tdd))
+rownames(plot_detect) <- plot_detect$Freq
+
+ggplot(plot_detect, aes(x = as.factor(Freq), y = Rate, fill = Rate)) +
+    geom_bar(stat = "identity") +
+    geom_text(aes(label = formatC(Number, format = "d", big.mark = ",")),
+              vjust = 1.6, color = "black", size = 4) +
+    scale_fill_gradient2(low = "orange2", mid = "lightblue",
+                         high = "dodgerblue3", midpoint = 0.65,
+                         limits = c(0,1),
+                         labels = scales::percent) +
+    theme_bw() +
+    scale_y_continuous(labels = scales::percent, limits = c(0,1),
+                       expand = expansion(mult = c(0, 0))) +
+    labs(x = "% of Segments",
+         y = "Genes Detected, % of Panel > LOQ")
+
+# ggsave("figs/strict-immune-percent-segments-detected.png")
+
+negativeProbefData <- subset(fData(tdd), CodeClass == "Negative")
+neg_probes <- unique(negativeProbefData$TargetName)
+
+immune_demoData <- 
+    tdd[fData(tdd)$DetectionRate >= 0.2 |
+                        fData(tdd)$TargetName %in% neg_probes, ]
+
+dim(immune_demoData)
+dplyr::count(pData(immune_demoData), SAMPLE_ID)
+dplyr::count(pData(immune_demoData), Comment, SITE)
+
+# write.csv(fData(tumor_demoData)$TargetName, "tables/immune-lung-genes.csv", row.names=FALSE)
+```
+
+```{r Immune_Q3_norm}
+# Graph Q3 value vs negGeoMean of Negatives
+ann_of_interest <- "SITE"
+Stat_data <- 
+    data.frame(row.names = colnames(exprs(immune_demoData)),
+               Segment = colnames(exprs(immune_demoData)),
+               Annotation = pData(immune_demoData)[, ann_of_interest],
+               Q3 = unlist(apply(exprs(immune_demoData), 2,
+                                 quantile, 0.75, na.rm = TRUE)),
+               NegProbe = exprs(immune_demoData)[neg_probes, ])
+Stat_data_m <- melt(Stat_data, measure.vars = c("Q3", "NegProbe"),
+                    variable.name = "Statistic", value.name = "Value")
+
+plt1 <- ggplot(Stat_data_m,
+               aes(x = Value, fill = Statistic)) +
+    geom_histogram(bins = 40) + theme_bw() +
+    scale_x_continuous(trans = "log2") +
+    facet_wrap(~Annotation, nrow = 1) + 
+    scale_fill_brewer(palette = 3, type = "qual") +
+    labs(x = "Counts", y = "Segments, #")
+
+plt2 <- ggplot(Stat_data,
+               aes(x = NegProbe, y = Q3, color = Annotation)) +
+    geom_abline(intercept = 0, slope = 1, lty = "dashed", color = "darkgray") +
+    geom_point() + guides(color = "none") + theme_bw() +
+    scale_x_continuous(trans = "log2") + 
+    scale_y_continuous(trans = "log2") +
+    theme(aspect.ratio = 1) +
+    labs(x = "Negative Probe GeoMean, Counts", y = "Q3 Value, Counts")
+
+plt3 <- ggplot(Stat_data,
+               aes(x = NegProbe, y = Q3 / NegProbe, color = Annotation)) +
+    geom_hline(yintercept = 1, lty = "dashed", color = "darkgray") +
+    geom_point() + theme_bw() +
+    scale_x_continuous(trans = "log2") + 
+    scale_y_continuous(trans = "log2") +
+    theme(aspect.ratio = 1) +
+    labs(x = "Negative Probe GeoMean, Counts", y = "Q3/NegProbe Value, Counts")
+
+btm_row <- plot_grid(plt2, plt3, nrow = 1, labels = c("B", ""),
+                     rel_widths = c(0.43,0.57))
+plot_grid(plt1, btm_row, ncol = 1, labels = c("A", ""))
+
+
+immune_demoData <- normalize(immune_demoData,
+                             norm_method = "quant", 
+                             desiredQuantile = .75,
+                             toElt = "q_norm")
+
+assayDataElement(object = immune_demoData, elt = "log_q") <-
+    assayDataApply(immune_demoData, 2, FUN = log_adj, elt = "q_norm")
+
+# png(file="figs/boxplot-raw-counts-immune-rich.png", width=600, height=300)
+
+boxplot(assayDataElement(immune_demoData, elt="exprs"),
+        col = "#9EDAE5", main = "Raw Counts",
+        log="y", ylim = c(0.001, max(exprs(immune_demoData))),
+        ylab = "Counts", outline=FALSE, xaxt="n")
+axis(tick=FALSE, side=1)
+
+# dev.off()
+
+# png(file="figs/boxplot-q3-norm-immune-rich.png", width=600, height=300)
+
+boxplot(assayDataElement(immune_demoData, elt="q_norm"),
+        col = "#2CA02C", main = "Q3 Norm Counts",
+        log="y", ylim = c(0.001, max(assayDataElement(immune_demoData, elt="q_norm"))),
+        ylab = "Counts, Q3 Normalized", outline=FALSE, xaxt="n")
+axis(tick=FALSE, side=1)
+
+# dev.off()
+
+boxplot(assayDataElement(immune_demoData, elt="log_q"),
+        col = "#2CA02C", main = "Log Q3 Norm Counts",
+        ylim = c(0.001, log2(max(assayDataElement(immune_demoData, elt="log_q"))) + 1),
+        ylab = "Counts, Q3 Normalized", outline=FALSE, xaxt="n")
+axis(tick=FALSE, side=1)
+
+# write.csv(assayDataElement(immune_demoData, elt="exprs"), "tables/strict-immune-raw-counts.csv")
+# write.csv(assayDataElement(immune_demoData, elt="q_norm"), "tables/strict-immune-q3-normalized-counts.csv")
+# write.csv(assayDataElement(immune_demoData, elt="log_q"), "tables/strict-immune-log-normalized-counts.csv")
+# write.csv(subset(pData(immune_demoData), select=-c(LOQ)), "tables/strict-immune-metadata.csv")
+```
+
+```{r deconvolution}
+library(SpatialDecon)
+bg <- derive_GeoMx_background(norm = immune_demoData@assayData$q_norm,
+                              probepool = fData(immune_demoData)$Module,
+                              negnames = "NegProbe-WTX")
+
+data("safeTME")
+data("safeTME.matches")
+signif(safeTME[seq_len(3), seq_len(3)], 2)
+
+# heatmap(sweep(safeTME, 1, apply(safeTME, 1, max), "/"),
+#         labRow = NA, margins = c(10, 5))
+
+res <- runspatialdecon(object = immune_demoData,
+                      norm_elt = "q_norm",
+                      raw_elt = "exprs",
+                      X = safeTME,
+                      align_genes = TRUE)
+
+heatmap(t(res$beta), cexCol = 0.5, cexRow = 0.7, margins = c(10,7))
+```
+
+```{r PCA_filtered_genes}
+pcamat <- assayDataElement(immune_demoData, elt="log_q")
+
+pca_cv <- apply(pcamat, 1, calc_CV)
+pca_cv <- sort(pca_cv, decreasing = TRUE)
+pca_goi <- names(pca_cv)[1:100]
+
+pc_out <- prcomp(t(pcamat[pca_goi,]), scale.=FALSE, center=TRUE)
+
+# pc_out <- prcomp(assayDataElement(immune_demoData, elt="log_q"), scale.=FALSE, center=TRUE)
+pData(immune_demoData)[, c("PC1", "PC2")] <- pc_out$x[,c("PC1", "PC2")]
+
+temp <- pData(immune_demoData)
+sampleids <- temp$SAMPLE_ID
+sampleids <- gsub("_BR", "", sampleids)
+brs <- sampleids %in% c("BCBM_1", "BCBM_22", "BCBM_27")
+sampleids[!brs] <- "None"
+temp$MATCH <- sampleids
+
+dplyr::count(temp, SITE, MATCH)
+             
+ggplot(temp,
+       aes(x = PC1, y = PC2, color=MATCH)) +
+    geom_point(size = 2) +
+    theme_bw() +
+    xlab(paste("PC1 (", 100*summary(pc_out)[["importance"]][2,1], "%)", sep="")) +
+    ylab(paste("PC2 (", 100*summary(pc_out)[["importance"]][2,2], "%)", sep="")) +
+    scale_color_manual(values=c(None='grey', BCBM_1='purple', BCBM_22='green', BCBM_27='red'))
+
+# ggsave("figs/strict-immune-pca-by-sample-id.png")
+
+scree <- summary(pc_out)[["importance"]][2:3,]
+scree <- as.data.frame(t(scree))
+scree <- scree %>%
+  rownames_to_column(var="PC") %>%
+  mutate(PC = factor(PC, levels=PC)) %>%
+  rename(Proportion = `Proportion of Variance`, Cumulative = `Cumulative Proportion`)
+
+ggplot(scree[1:10,]) + geom_col(aes(x=PC, y=Proportion)) +
+geom_line(aes(x=PC, y=Cumulative), color='red', size=1, group=1) +
+      geom_point(aes(x=PC, y=Cumulative), color='red', size=3) + theme_bw()
+
+# ggsave("figs/strict-immune-scree-plot.png")
+```

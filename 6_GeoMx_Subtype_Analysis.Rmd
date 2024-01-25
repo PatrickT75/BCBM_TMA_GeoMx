@@ -1,0 +1,185 @@
+---
+title: "GeoMx_Clinical"
+output: html_document
+date: "2024-01-16"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(pheatmap)
+library(ggvenn)
+library(ggplot2)
+library(dplyr)
+library(tidyverse)
+library(lmerTest)
+library(ggrepel)
+library(reshape2)
+library(clusterProfiler)
+library(enrichplot)
+library(msigdbr)
+library(reshape2)
+
+immune <- read.csv('tables/nopdx/immune-q3-normalized-counts.csv', row.names=1)
+tumor <- read.csv('tables/nopdx/tumor-q3-normalized-counts.csv', row.names=1)
+
+immune_log <- read.csv('tables/nopdx/immune-log-normalized-counts.csv', row.names=1)
+tumor_log <- read.csv('tables/nopdx/tumor-log-normalized-counts.csv', row.names=1)
+
+immune_genes <- rownames(immune_log)
+tumor_genes <- rownames(tumor_log)
+
+immune_metadata <- read.csv('tables/nopdx/immune-metadata.csv', row.names=1) %>%
+  mutate(PATIENT_SAMPLE = gsub("_BR", "", SAMPLE_ID)) %>%
+  select(-c("PC1", "PC2"))
+rownames(immune_metadata) <- gsub("-", ".", rownames(immune_metadata))
+  
+tumor_metadata <- read.csv('tables/nopdx/tumor-metadata.csv', row.names=1) %>%
+  mutate(PATIENT_SAMPLE = gsub("_BR", "", SAMPLE_ID)) %>%
+  select(-c("PC1", "PC2"))
+
+immune_metadata <- immune_metadata %>%
+  mutate(PATIENT_SAMPLE = gsub("_LU", "", PATIENT_SAMPLE))
+
+tumor_metadata <- tumor_metadata %>%
+  mutate(PATIENT_SAMPLE = gsub("_LU", "", PATIENT_SAMPLE))
+
+rownames(tumor_metadata) <- gsub("-", ".", rownames(tumor_metadata))
+
+calc_CV <- function(x) {sd(x) / mean(x)}
+```
+
+```{r HER2_distribution_immune}
+immune_hr <- immune_log %>%
+  select(any_of(rownames(immune_metadata[immune_metadata$Overall.Subtype.Primary == "HER2-/HR+",]))) 
+
+immune_hr_her2_low <- immune_hr %>%
+  select(any_of(rownames(immune_metadata[immune_metadata$HER2.Low.Positive.HER2.0.Subgroup.Status.PRIMARY == "HER2-Low Positive",]))) %>%
+  filter(row.names(immune_hr) == "ERBB2")
+
+immune_hr_her2_0 <- immune_hr %>%
+  select(any_of(rownames(immune_metadata[immune_metadata$HER2.Low.Positive.HER2.0.Subgroup.Status.PRIMARY == "HER2-0",]))) %>%
+  filter(row.names(immune_hr) == "ERBB2")
+
+immune_hr_her2_all <- t(cbind(immune_hr_her2_low, immune_hr_her2_0))
+immune_hr_her2_all <- data.frame(HER2_status = rep(c("HER2-low", "HER2-0"), c(ncol(immune_hr_her2_low), ncol(immune_hr_her2_0))), ERBB2 = immune_hr_her2_all)
+
+ggplot(immune_hr_her2_all, aes(x=ERBB2, color=HER2_status)) + geom_density()
+
+# ggsave("figs/nopdx/immune-hrpos-her2-density.png")
+```
+
+
+```{r HER2_distribution_tumor}
+tumor_hr <- tumor_log %>%
+  select(any_of(rownames(tumor_metadata[tumor_metadata$Overall.Subtype.Primary == "HER2-/HR+",]))) 
+
+tumor_hr_her2_low <- tumor_hr %>%
+  select(any_of(rownames(tumor_metadata[tumor_metadata$HER2.Low.Positive.HER2.0.Subgroup.Status.PRIMARY == "HER2-Low Positive",]))) %>%
+  filter(row.names(tumor_hr) == "ERBB2")
+
+tumor_hr_her2_0 <- tumor_hr %>%
+  select(any_of(rownames(tumor_metadata[tumor_metadata$HER2.Low.Positive.HER2.0.Subgroup.Status.PRIMARY == "HER2-0",]))) %>%
+  filter(row.names(tumor_hr) == "ERBB2")
+
+tumor_hr_her2_all <- t(cbind(tumor_hr_her2_low, tumor_hr_her2_0))
+tumor_hr_her2_all <- data.frame(HER2_status = rep(c("HER2-low", "HER2-0"), c(ncol(tumor_hr_her2_low), ncol(tumor_hr_her2_0))), ERBB2 = tumor_hr_her2_all)
+
+ggplot(tumor_hr_her2_all, aes(x=ERBB2, color=HER2_status)) + geom_density()
+
+ggsave("figs/nopdx/tumor-hrpos-her2-density.png")
+```
+
+```{r HER2_loss}
+overall_metadata <- readxl::read_xlsx('tables/BCBM TMA Report 2023-12-31_final.xlsx')
+
+discordant <- overall_metadata[overall_metadata$`Overall Subtype Mets with Primary Fallback` != overall_metadata$`Overall Subtype Primary`,]
+
+discordant_her2 <- overall_metadata[overall_metadata$`HER2 Low Positive/HER2-0 Subgroup Status PRIMARY` != overall_metadata$`HER2 Low Positive/HER2-0 Subgroup Status METS`,]
+
+discordant_her2[discordant_her2$`HER2 Low Positive/HER2-0 Subgroup Status PRIMARY` == 'HER2-Low Positive',]
+```
+
+```{r within_patient_variability}
+# immune_metadata <- immune_metadata %>%
+#   mutate(PATIENT_SAMPLE = gsub("_LU", "", PATIENT_SAMPLE))
+# 
+# patient_sample <- unique(immune_metadata$PATIENT_SAMPLE)
+# 
+# for i in 1:length(patient_sample){
+#   
+# }
+
+immune_genes <- rownames(immune_log)
+tumor_genes <- rownames(tumor_log)
+combined_genes <- intersect(immune_genes, tumor_genes)
+
+immune_cv <- apply(immune_log[combined_genes, ], 1, calc_CV)
+tumor_cv <- apply(tumor_log[combined_genes, ], 1, calc_CV)
+combined_cv <- cbind.data.frame(immune_cv, tumor_cv)
+
+combined_cv
+cv_heatmap <- pheatmap(combined_cv, row.names=F)
+
+table(immune_metadata$PATIENT_SAMPLE)
+table(tumor_metadata$PATIENT_SAMPLE)
+```
+
+
+```{r}
+patients_cv <- c("BCBM_1", "BCBM_14", "BCBM_15", "BCBM_22", "BCBM_26", "BCBM_27", "BCBM_32", "BCBM_34", "BCBM_35", "BCBM_37", "BCBM_40", "BCBM_42", "BCBM_45", "BCBM_47", "BCBM_48", "BCBM_49", "BCBM_5", "BCBM_6")
+
+# patients_cv <- c("BCBM_1", "BCBM_22", "BCBM_27", "BCBM_32", "BCBM_42", "BCBM_45", "BCBM_47", "BCBM_49", "BCBM_5", "BCBM_6")
+
+immune_cvlist <- data.frame()
+for (i in 1:length(patients_cv)){
+  temp <- immune_log[combined_genes,] %>%
+    select(any_of(rownames(immune_metadata[immune_metadata$PATIENT_SAMPLE == patients_cv[i],])))
+  
+  cvlist <- apply(temp, 1, calc_CV)
+  immune_cvlist <- rbind.data.frame(immune_cvlist, cvlist)
+}
+
+rownames(immune_cvlist) <- paste("Immune.", patients_cv, sep="")
+colnames(immune_cvlist) <- combined_genes
+
+tumor_cvlist <- data.frame()
+for (i in 1:length(patients_cv)){
+  temp <- tumor_log[combined_genes,] %>%
+    select(any_of(rownames(tumor_metadata[tumor_metadata$PATIENT_SAMPLE == patients_cv[i],])))
+  
+  cvlist <- apply(temp, 1, calc_CV)
+  tumor_cvlist <- rbind.data.frame(tumor_cvlist, cvlist)
+}
+
+rownames(tumor_cvlist) <- paste("Tumor.", patients_cv, sep="")
+colnames(tumor_cvlist) <- combined_genes
+
+total_cvlist <- rbind.data.frame(immune_cvlist, tumor_cvlist)
+
+cv_anno <- as.data.frame(rep(c("Immune", "Tumor"), c(length(patients_cv), length(patients_cv))))
+rownames(cv_anno) <- rownames(total_cvlist)
+colnames(cv_anno) <- "SITE"
+
+hm_cvlist <- pheatmap(total_cvlist, show_colnames = F, cluster_rows=F, cluster_cols=F, annotation_row = cv_anno)
+
+melted_cvlist <- melt(total_cvlist)
+melted_cvlist$sample <- rep(rownames(total_cvlist), ncol(total_cvlist))
+melted_cvlist$id <- rep(rep(patients_cv, 2), ncol(total_cvlist))
+melted_cvlist$anno <- rep(rep(c("Immune", "Tumor"), c(length(patients_cv), length(patients_cv))), ncol(total_cvlist))
+colnames(melted_cvlist) <- c("variable", "coef", "sample", "id", "annotation")
+
+melted_cvlist$sample <- factor(melted_cvlist$sample, levels = c("Immune.BCBM_1", "Tumor.BCBM_1", "Immune.BCBM_14", "Tumor.BCBM_14", "Immune.BCBM_15", "Tumor.BCBM_15", "Immune.BCBM_22", "Tumor.BCBM_22", "Immune.BCBM_26", "Tumor.BCBM_26", "Immune.BCBM_27", "Tumor.BCBM_27", "Immune.BCBM_32", "Tumor.BCBM_32", "Immune.BCBM_34", "Tumor.BCBM_34", "Immune.BCBM_35", "Tumor.BCBM_35", "Immune.BCBM_37", "Tumor.BCBM_37", "Immune.BCBM_40", "Tumor.BCBM_40", "Immune.BCBM_42", "Tumor.BCBM_42", "Immune.BCBM_45", "Tumor.BCBM_45", "Immune.BCBM_47", "Tumor.BCBM_47", "Immune.BCBM_48", "Tumor.BCBM_48", "Immune.BCBM_49", "Tumor.BCBM_49", "Immune.BCBM_5", "Tumor.BCBM_5", "Immune.BCBM_6", "Tumor.BCBM_6"))
+
+bp <- ggplot(melted_cvlist, mapping = aes(x=sample, y=coef, color=annotation)) + geom_boxplot() + theme(axis.text.x = element_text(angle=90))
+
+# png("figs/nopdx/boxplot-immune-vs-tumor-coefvariation.png", width=15, height=15, units = "in", res=300)
+# print(bp)
+# dev.off()
+
+# png("figs/nopdx/immune-vs-tumor-coefvariation.png", width=15, height=15, units = "in", res=300)
+# print(hm_cvlist)
+# dev.off()
+
+table(immune_metadata$PATIENT_SAMPLE)
+table(tumor_metadata$PATIENT_SAMPLE)
+```

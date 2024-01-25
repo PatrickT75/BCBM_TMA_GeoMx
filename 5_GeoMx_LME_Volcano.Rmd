@@ -1,0 +1,216 @@
+---
+title: "GeoMx_LME_Volcano"
+output: html_document
+date: "2024-01-25"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(pheatmap)
+library(ggvenn)
+library(dplyr)
+library(tidyverse)
+library(lmerTest)
+library(ggrepel)
+library(reshape2)
+library(clusterProfiler)
+library(enrichplot)
+library(msigdbr)
+library(performance)
+library(cluster)
+
+immune <- read.csv('tables/nopdx/immune-q3-normalized-counts.csv', row.names=1)
+tumor <- read.csv('tables/nopdx/tumor-q3-normalized-counts.csv', row.names=1)
+
+immune_log <- read.csv('tables/nopdx/immune-log-normalized-counts.csv', row.names=1)
+tumor_log <- read.csv('tables/nopdx/tumor-log-normalized-counts.csv', row.names=1)
+
+immune_genes <- rownames(immune_log)
+tumor_genes <- rownames(tumor_log)
+
+immune_metadata <- read.csv('tables/nopdx/immune-metadata.csv', row.names=1) %>%
+  mutate(PATIENT_SAMPLE = gsub("_BR", "", SAMPLE_ID)) %>%
+  select(-c("PC1", "PC2"))
+rownames(immune_metadata) <- gsub("-", ".", rownames(immune_metadata))
+  
+tumor_metadata <- read.csv('tables/nopdx/tumor-metadata.csv', row.names=1) %>%
+  mutate(PATIENT_SAMPLE = gsub("_BR", "", SAMPLE_ID)) %>%
+  select(-c("PC1", "PC2"))
+
+rownames(tumor_metadata) <- gsub("-", ".", rownames(tumor_metadata))
+
+# venn_genes <- read.csv('tables/all-brain-breast-lung-genes.csv')
+
+cal_z_score <- function(x) {
+  (x - mean(x)) / sd(x)
+}
+
+combined_genes <- intersect(immune_genes, tumor_genes)
+# create CV function
+calc_CV <- function(x) {sd(x) / mean(x)}
+
+pseudocount <- 1
+```
+
+## Linear Mixed-Effects Models
+
+```{r immune_lme}
+immune_melted <- melt(immune_log %>% 
+    select(any_of(rownames(immune_metadata[immune_metadata$Overall.Subtype.Primary == 'TNBC',]))) %>%
+    rownames_to_column()) %>%
+                  rename(Gene = rowname, Sample = variable, Value=value)
+
+immune_meta <- immune_metadata %>%
+  rownames_to_column("Sample") %>%
+  mutate(PATIENT_ID = gsub("_BR", "", SAMPLE_ID))
+
+immune_melted <- immune_melted %>%
+  inner_join(immune_meta, by = "Sample") %>%
+  filter(SITE %in% c("Brain", "Breast"))
+
+immune_lme <- data.frame(Estimate = c(), Std.Error = c(), df = c(), `t value` = c(), `Pr(>|t|)` = c())
+
+for(i in 1:length(unique(immune_melted$Gene))){
+  immunetest <- immune_melted %>% filter(Gene == unique(immune_melted$Gene)[i])
+  fm <- lmer(Value ~ SITE + (1 | PATIENT_ID), data=immunetest)
+  immune_lme <- rbind(immune_lme, lmerTest:::get_coefmat(fm)[2,])
+}
+
+colnames(immune_lme) <- c("Log2FC", "Std.Error", "df", "t value", "Pr(>|t|)")
+rownames(immune_lme) <- unique(immune_melted$Gene)
+
+immune_lme$FDR <- p.adjust(immune_lme$`Pr(>|t|)`, method = "fdr")
+
+immune_lme
+```
+
+```{r tumor_lme}
+tumor_melted <- melt(tumor_log %>% 
+                       select(any_of(rownames(tumor_metadata[tumor_metadata$Overall.Subtype.Primary == 'TNBC',]))) %>%
+                       rownames_to_column()) %>%
+  rename(Gene = rowname, Sample = variable, Value=value)
+
+tumor_meta <- tumor_metadata %>%
+  rownames_to_column("Sample") %>%
+  mutate(PATIENT_ID = gsub("_BR", "", SAMPLE_ID))
+
+tumor_melted <- tumor_melted %>%
+  inner_join(tumor_meta, by = "Sample") %>%
+  filter(SITE %in% c("Brain", "Breast"))
+
+tumor_lme <- data.frame(Estimate = c(), Std.Error = c(), df = c(), `t value` = c(), `Pr(>|t|)` = c())
+
+for(i in 1:length(unique(tumor_melted$Gene))){
+  tumortest <- tumor_melted %>% filter(Gene == unique(tumor_melted$Gene)[i])
+  fm <- lmer(Value ~ SITE + (1 | PATIENT_ID), data=tumortest)
+  # if (i < 4){
+  #   print(model_performance(fm))
+  # }
+  tumor_lme <- rbind(tumor_lme, lmerTest:::get_coefmat(fm)[2,])
+}
+
+colnames(tumor_lme) <- c("Log2FC", "Std.Error", "df", "t value", "Pr(>|t|)")
+rownames(tumor_lme) <- unique(tumor_melted$Gene)
+
+tumor_lme$FDR <- p.adjust(tumor_lme$`Pr(>|t|)`, method = "fdr")
+
+tumor_lme
+```
+
+## GSEA 
+```{r gsea_setup}
+geneset <- msigdbr(species="Homo sapiens", category="H")
+geneset <- select(geneset, gs_name, gene_symbol)
+```
+
+```{r immune_gsea}
+protlist_immune <- immune_lme$Log2FC
+names(protlist_immune) <- rownames(immune_lme)
+protlist_immune <- sort(protlist_immune, decreasing=TRUE)
+
+gse_immune <- GSEA(protlist_immune, exponent =1, minGSSize = 10, maxGSSize = 2000, eps=1e-10,
+                   pvalueCutoff = 0.25, pAdjustMethod= "BH", TERM2GENE = geneset)
+
+gse_immune@result
+
+# ggsave("figs/nopdx/immune-tnbc-dotplot-brain-vs-breast.png", clusterProfiler::dotplot(gse_immune, showCategory=25), width=15, height=15, units="in")
+
+# for (i in 1:nrow(gse_immune@result)){
+#   p <- gseaplot2(gse_immune, geneSetID = i, base_size=15, title = paste(gse_immune@result[i,1], ", p-adj: ", gse_immune@result[i,7], sep=""))
+#   # png(paste("figs/gsea/immune-", gse_immune@result[i,1], ".png", sep=""), width=15, height=15, units="in", res=300)
+#   print(p)
+#   # dev.off()
+# }
+```
+
+```{r tumor_gsea}
+protlist_tumor <- tumor_lme$Log2FC
+names(protlist_tumor) <- rownames(tumor_lme)
+protlist_tumor <- sort(protlist_tumor, decreasing=TRUE)
+
+gse_tumor <- GSEA(protlist_tumor, exponent =1, minGSSize = 10, maxGSSize = 2000, eps=1e-10,
+                   pvalueCutoff = 0.25, pAdjustMethod= "BH", TERM2GENE = geneset)
+
+gse_tumor@result
+
+# ggsave("figs/nopdx/tumor-tnbc-dotplot-brain-vs-breast.png", clusterProfiler::dotplot(gse_tumor, showCategory=25), width=15, height=15, units="in")
+
+# for (i in 1:nrow(gse_tumor@result)){
+  # p <- gseaplot2(gse_tumor, geneSetID = i, base_size=15, title = paste(gse_tumor@result[i,1], ", p-adj: ", gse_tumor@result[i,7], sep=""))
+  # # png(paste("figs/gsea/tumor-", gse_tumor@result[i,1], ".png", sep=""), width=15, height=15, units="in", res=300)
+  # print(p)
+  # dev.off()
+# }
+```
+
+## Volcano Plots
+
+```{r immune_volcano}
+## labeling by differential expression
+
+immune_lme$diffexpressed <- "NO"
+immune_lme$diffexpressed[immune_lme$Log2FC > 1 & immune_lme$FDR < 0.05] <- "UP"
+immune_lme$diffexpressed[immune_lme$Log2FC < -1 & immune_lme$FDR < 0.05] <- "DOWN"
+
+immune_lme$delabel <- NA
+immune_lme$delabel[immune_lme$diffexpressed != "NO"] <- rownames(immune_lme)[immune_lme$diffexpressed != "NO"]
+
+p <- ggplot(data=immune_lme, aes(x=Log2FC, y=-log10(FDR), col=diffexpressed, label=delabel)) +
+        geom_point() + 
+        theme_minimal() +
+        geom_text_repel() +
+        scale_color_manual(values=c("blue", "black", "red")) +
+        geom_vline(xintercept=c(-1, 1), col="red") +
+        geom_hline(yintercept=-log10(0.05), col="red")
+
+# ggsave("figs/nopdx/immune-gsea-volcano.png", sep=""))
+# print(p)
+# write.csv(immune_lme, "tables/nopdx/immune-lme-volcano-deg.csv", sep=",", row.names = T)
+```
+
+```{r tumor_volcano}
+## labeling by GSEA
+
+for(i in 1:length(gse_tumor@result$core_enrichment)){
+  tumor_gse_test <- strsplit(gse_tumor@result$core_enrichment[i], split = "/")[[1]]
+  
+  tumor_lme$gsea <- "NO"
+  tumor_lme$gsea[rownames(tumor_lme) %in% tumor_gse_test] <- gse_tumor@result$ID[i]
+
+  tumor_lme$delabel <- NA
+  tumor_lme$delabel[tumor_lme$gsea != "NO"] <- rownames(tumor_lme)[tumor_lme$gsea != "NO"]
+
+  p <- ggplot(data=tumor_lme, aes(x=Log2FC, y=-log10(FDR), col=gsea, label=delabel)) +
+        geom_point() + 
+        theme_minimal() +
+        geom_text_repel() +
+        scale_color_manual(values=c("blue", "grey", "red")) +
+        geom_vline(xintercept=c(-1, 1), col="red") +
+        geom_hline(yintercept=-log10(0.05), col="red")
+  
+  print(p)
+  # ggsave(paste("figs/nopdx/tumor-gsea-volcano-labelled_", gse_tumor@result$ID[i], ".png", sep=""))
+}
+
+# write.csv(tumor_lme, "tables/nopdx/tumor-lme-volcano-deg.csv", sep=",", row.names = T)
+```

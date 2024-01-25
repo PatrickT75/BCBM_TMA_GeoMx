@@ -1,0 +1,432 @@
+---
+title: "GeoMx_Differential_Expression"
+output: html_document
+date: "2023-11-21"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(pheatmap)
+library(ggvenn)
+library(dplyr)
+library(tidyverse)
+library(lmerTest)
+library(ggrepel)
+library(reshape2)
+library(clusterProfiler)
+library(enrichplot)
+library(msigdbr)
+library(performance)
+library(cluster)
+
+immune <- read.csv('tables/nopdx/immune-q3-normalized-counts.csv', row.names=1)
+tumor <- read.csv('tables/nopdx/tumor-q3-normalized-counts.csv', row.names=1)
+
+immune_log <- read.csv('tables/nopdx/immune-log-normalized-counts.csv', row.names=1)
+tumor_log <- read.csv('tables/nopdx/tumor-log-normalized-counts.csv', row.names=1)
+
+immune_genes <- rownames(immune_log)
+tumor_genes <- rownames(tumor_log)
+
+immune_metadata <- read.csv('tables/nopdx/immune-metadata.csv', row.names=1) %>%
+  mutate(PATIENT_SAMPLE = gsub("_BR", "", SAMPLE_ID)) %>%
+  select(-c("PC1", "PC2"))
+rownames(immune_metadata) <- gsub("-", ".", rownames(immune_metadata))
+  
+tumor_metadata <- read.csv('tables/nopdx/tumor-metadata.csv', row.names=1) %>%
+  mutate(PATIENT_SAMPLE = gsub("_BR", "", SAMPLE_ID)) %>%
+  select(-c("PC1", "PC2"))
+
+rownames(tumor_metadata) <- gsub("-", ".", rownames(tumor_metadata))
+
+# venn_genes <- read.csv('tables/all-brain-breast-lung-genes.csv')
+
+cal_z_score <- function(x) {
+  (x - mean(x)) / sd(x)
+}
+
+combined_genes <- intersect(immune_genes, tumor_genes)
+# create CV function
+calc_CV <- function(x) {sd(x) / mean(x)}
+
+pseudocount <- 1
+```
+
+## Sample-Sample Correlation
+
+```{r}
+immune_cormat <- cor(immune_log, method="pearson")
+immune_heatmap <- pheatmap(immune_cormat, show_rownames = FALSE, show_colnames = FALSE, clustering_method = "average", 
+                           clustering_distance_cols = "correlation", clustering_distance_rows = "correlation", annotation_col = subset(immune_metadata, select=c(PATIENT_SAMPLE, `Overall.Subtype.Primary`, `HER2.Low.Positive.HER2.0.Subgroup.Status.PRIMARY`, SITE)))
+
+# png("figs/nopdx/immune-sample-correlation-test.png", width=12, height=12, units = "in", res=300)
+# print(immune_heatmap)
+# dev.off()
+
+tumor_cormat <- cor(tumor_log, method="pearson")
+tumor_heatmap <- pheatmap(tumor_cormat, show_rownames = FALSE, show_colnames = FALSE, clustering_method = "average",
+         clustering_distance_cols = "correlation", clustering_distance_rows = "correlation", annotation_col = subset(tumor_metadata, select=c( PATIENT_SAMPLE, `Overall.Subtype.Primary`, `HER2.Low.Positive.HER2.0.Subgroup.Status.PRIMARY`, SITE)))
+
+# png("figs/nopdx/tumor-sample-correlation-test.png", width=14, height=14, units = "in", res=300)
+# print(tumor_heatmap)
+# dev.off()
+```
+
+## Sample-Feature Heatmap
+
+### *Combined*
+```{r}
+combined_immune_tumor <- cbind.data.frame(immune_log[combined_genes,], tumor_log[combined_genes,])
+
+combined_immune_tumor_brain <- combined_immune_tumor %>% 
+  select(any_of(
+    c(rownames(tumor_metadata[tumor_metadata$SITE == "Brain",]), 
+               rownames(immune_metadata[immune_metadata$SITE == "Brain",])
+      )
+    ))
+
+combined_immune_tumor_breast <- combined_immune_tumor %>% 
+  select(any_of(
+    c(rownames(tumor_metadata[tumor_metadata$SITE == "Breast",]), 
+               rownames(immune_metadata[immune_metadata$SITE == "Breast",])
+      )
+    ))
+
+###### BRAIN ######
+## remove with percentage of 0's > 10%
+gene_percentzero <- rowSums(combined_immune_tumor_brain <= log2(pseudocount))/ncol(combined_immune_tumor_brain)
+combined_immune_tumor_brain <- combined_immune_tumor_brain[gene_percentzero < 0.1,]
+  
+combined_metadata <- rbind.data.frame(immune_metadata, tumor_metadata)
+
+combined_cv_brain <- apply(combined_immune_tumor_brain, 1, calc_CV)
+combined_cv_brain <- sort(combined_cv_brain, decreasing = TRUE)
+combined_goi_brain <- names(combined_cv_brain[1:1000])
+
+## code for looking at optimal number of clusters
+# wss <- function(k) {
+#   kmeans(combined_immune_tumor_brain[combined_goi_brain,], k, nstart = 10, iter.max=50, algorithm="Lloyd")$tot.withinss
+# }
+# 
+# # Compute and plot wss for k = 1 to k = 15
+# k.values <- 1:15
+# 
+# # extract wss for 2-15 clusters
+# wss_values <- lapply(k.values, wss)
+# wss_values <- unlist(wss_values)
+# 
+# plot(k.values, wss_values,
+#        type="b", pch = 19, frame = FALSE,
+#        xlab="Number of clusters K",
+#        ylab="Total within-clusters sum of squares")
+
+km.out <- kmeans(combined_immune_tumor_brain[combined_goi_brain,], centers = 5, nstart = 20, algorithm="Lloyd", iter.max=50)
+combined_clusts_brain <- as.data.frame(as.factor(km.out$cluster)) %>% 
+  rename(cluster = `as.factor(km.out$cluster)`) %>%
+  arrange(cluster)
+
+standardized_all <- t(apply(combined_immune_tumor_brain[rownames(combined_clusts_brain),], 1, cal_z_score))
+
+combined_cluster_brain <- pheatmap(standardized_all, show_rownames=FALSE, show_colnames=FALSE, clustering_method = "ward.D2",
+         cluster_rows = FALSE, cluster_cols = TRUE, annotation_col = subset(combined_metadata, select=c(Comment, Overall.Subtype.Primary)),
+         annotation_row = combined_clusts_brain, treeheight_row = 0)
+
+# png("figs/strict-combined-gene-clustering-brain.png", width=15, height=15, units = "in", res=300)
+# print(combined_cluster_brain)
+# dev.off()
+
+
+###### BREAST ######
+## remove with percentage of 0's > 10%
+gene_percentzero <- rowSums(combined_immune_tumor_breast <= log2(pseudocount))/ncol(combined_immune_tumor_breast)
+combined_immune_tumor_breast <- combined_immune_tumor_breast[gene_percentzero < 0.1,]
+  
+combined_metadata <- rbind.data.frame(immune_metadata, tumor_metadata)
+
+combined_cv_breast <- apply(combined_immune_tumor_breast, 1, calc_CV)
+combined_cv_breast <- sort(combined_cv_breast, decreasing = TRUE)
+combined_goi_breast <- names(combined_cv_breast[1:1000])
+
+km.out <- kmeans(combined_immune_tumor_breast[combined_goi_breast,], centers = 5, nstart = 20, algorithm="Lloyd", iter.max=50)
+combined_clusts_breast <- as.data.frame(as.factor(km.out$cluster)) %>% 
+  rename(cluster = `as.factor(km.out$cluster)`) %>%
+  arrange(cluster)
+
+standardized_all <- t(apply(combined_immune_tumor_breast[rownames(combined_clusts_breast),], 1, cal_z_score))
+
+combined_cluster_breast <- pheatmap(standardized_all, show_rownames=FALSE, show_colnames=FALSE, clustering_method = "ward.D2",
+         cluster_rows = FALSE, cluster_cols = TRUE, annotation_col = subset(combined_metadata, select=c(Comment, Overall.Subtype.Primary)),
+         annotation_row = combined_clusts_breast, treeheight_row = 0)
+
+# png("figs/strict-combined-gene-clustering-breast.png", width=15, height=15, units = "in", res=300)
+# print(combined_cluster_breast)
+# dev.off()
+```
+
+### *Immune*
+```{r immune}
+immune_log_hm <- immune_log %>% 
+  filter(rowSums(. <= log2(pseudocount))/ncol(.) < 0.1) %>%
+  select(any_of(rownames(immune_metadata[immune_metadata$SITE %in% c("Brain", "Breast"),]))) %>%
+  select(any_of(rownames(immune_metadata[immune_metadata$Overall.Subtype.Primary == 'TNBC',])))
+
+sample_percentzero <- colSums(immune_log_hm <= log2(pseudocount))/nrow(immune_log_hm)
+
+immune_log_hm <- immune_log_hm %>%
+  select(names(sample_percentzero[sample_percentzero <= 0.05]))
+dim(immune_log_hm)
+
+immune_cv <- apply(immune_log_hm, 1, calc_CV)
+immune_cv <- sort(immune_cv, decreasing = TRUE)
+immune_goi <- names(immune_cv[1:1000])
+
+km.out <- kmeans(immune_log_hm[immune_goi,], centers = 5, nstart = 20, algorithm="Lloyd", iter.max=50)
+immune_clusts <- as.data.frame(as.factor(km.out$cluster)) %>% 
+  rename(cluster = `as.factor(km.out$cluster)`) %>%
+  arrange(cluster)
+
+standardized_immune <- t(apply(immune_log_hm[rownames(immune_clusts),], 1, cal_z_score))
+
+immune_cluster <- pheatmap(standardized_immune, show_rownames=FALSE, show_colnames=FALSE, clustering_method = "ward.D2",
+         cluster_rows = FALSE, cluster_cols = TRUE, annotation_col = subset(immune_metadata, select=c(SITE, PATIENT_SAMPLE, HER2.Low.Positive.HER2.0.Subgroup.Status.PRIMARY)),
+         annotation_row = immune_clusts, treeheight_row = 0)
+
+# png("figs/nopdx/immune-tnbc-gene-clustering.png", width=12, height=12, units = "in", res=300)
+# print(immune_cluster)
+# dev.off()
+```
+
+### *Tumor*
+```{r tumor}
+# removelist <- c("DSP.1001660005648.A.C03.dcc", "DSP.1001660005648.A.B01.dcc", "DSP.1001660005648.A.G01.dcc")
+
+tumor_log_hm <- tumor_log %>% 
+  filter(rowSums(. <= log2(pseudocount))/ncol(.) < 0.1) %>%
+  select(any_of(rownames(tumor_metadata[tumor_metadata$SITE %in% c("Brain", "Breast"),]))) %>%
+  select(any_of(rownames(tumor_metadata[tumor_metadata$Overall.Subtype.Primary == "TNBC",]))) # %>%
+  # select(any_of(rownames(tumor_metadata[tumor_metadata$PATIENT_SAMPLE != "BCBM_14",])))
+
+sample_percentzero <- colSums(tumor_log_hm <= log2(pseudocount))/nrow(tumor_log_hm)
+
+tumor_log_hm <- tumor_log_hm %>%
+  select(names(sample_percentzero[sample_percentzero < 0.05]))
+dim(tumor_log_hm)
+
+tumor_cv <- apply(tumor_log_hm, 1, calc_CV)
+tumor_cv <- sort(tumor_cv, decreasing = TRUE)
+tumor_goi <- names(tumor_cv)[1:1000]
+
+km.out <- kmeans(tumor_log_hm[tumor_goi,], centers = 5, nstart = 20, algorithm="Lloyd", iter.max=50)
+
+### code for looking at optimal hierarchical clustering instead of optimal k-means
+# datacor <- cor(t(tumor_log_hm[tumor_goi,]))
+# datadist <- as.dist(1-datacor)
+# hclust_tree <- hclust(datadist, method="ward.D2")
+
+# silhouette_score <- function(k){
+#       my_hclust <- hclust(datadist, method="ward.D2")
+#       cluster <- cutree(tree = my_hclust, k=k)
+#       ss <- silhouette(cluster, datadist)
+#       mean(ss[, 3])
+# }
+# 
+# k <- 2:20
+# 
+# avg_sil <- base::sapply(k, silhouette_score)
+# clusterdf <- data.frame(Clusters=k, Score=avg_sil)
+# ggplot(clusterdf, mapping=aes(x=Clusters, y=Score)) + geom_point(size=3) + labs(x="Number of Clusters", y="Silhouette Score") +
+#         theme(axis.line = element_line(colour = "black"), panel.grid.major = element_blank(), panel.grid.minor = element_blank(), panel.background = element_rect(fill = 'white'))
+
+# hc.out <- cutree(tree = hclust_tree, k=6)
+# 
+# tumor_clusts <- as.data.frame(hc.out) %>% 
+#   mutate(hc.out = as.factor(hc.out)) %>%
+#   rename(cluster = hc.out)
+
+tumor_clusts <- as.data.frame(as.factor(km.out$cluster)) %>% 
+  rename(cluster = `as.factor(km.out$cluster)`) %>%
+  arrange(cluster)
+
+# tumor_cluster <- pheatmap(tumor_log_hm[rownames(tumor_clusts),], cluster_rows = hclust_tree, cluster_cols = TRUE, 
+#                           annotation_row = tumor_clusts, show_rownames=FALSE, show_colnames=FALSE, annotation_col = subset(tumor_metadata, select=c(SITE, SAMPLE_ID)),
+#                           treeheight_row = 0)
+
+standardized_tumor <- t(apply(tumor_log_hm[rownames(tumor_clusts),], 1, cal_z_score))
+
+tumor_cluster <- pheatmap(standardized_tumor, show_rownames=FALSE, show_colnames=FALSE, clustering_method = "ward.D2",
+         cluster_rows = FALSE, cluster_cols = TRUE, annotation_col = subset(tumor_metadata, select=c(SITE, HER2.Low.Positive.HER2.0.Subgroup.Status.PRIMARY, PATIENT_SAMPLE)),
+         annotation_row = tumor_clusts, treeheight_row = 0)
+
+
+# png("figs/nopdx/tumor-tnbc-gene-clustering.png", width=12, height=12, units = "in", res=300)
+# print(tumor_cluster)
+# dev.off()
+
+```
+
+
+
+## Wilcoxon Tests
+
+```{r wilcoxon}
+immune_wilcoxon <- c()
+
+matches <- c("BCBM_1", "BCBM_22", "BCBM_27", "BCBM_1_BR", "BCBM_22_BR", "BCBM_27_BR")
+immune_matched_samples <- immune_metadata %>% filter(SAMPLE_ID %in% matches)
+immune_matched_samples <- subset(immune_log, select = colnames(immune_log) %in% rownames(immune_matched_samples))
+
+for (i in 1:nrow(immune_matched_samples)){
+  melted <- melt(immune_matched_samples[i,])
+  melted <- cbind.data.frame(melted, SITE = c(rep(c("Brain", "Breast"), c(9, 9))))
+  pval <- wilcox.test(value ~ SITE, data=melted, paired=FALSE, exact=FALSE)$p.value
+  immune_wilcoxon <- append(immune_wilcoxon, pval)
+}
+
+immune_wilcoxon <- data.frame(Gene = rownames(immune_log), P.adj=p.adjust(immune_wilcoxon, method="BH"))
+
+
+tumor_wilcoxon <- c()
+
+matches <- c("BCBM_1", "BCBM_22", "BCBM_27", "BCBM_1_BR", "BCBM_22_BR", "BCBM_27_BR")
+tumor_matched_samples <- tumor_metadata %>% filter(SAMPLE_ID %in% matches)
+tumor_matched_samples <- subset(tumor_log, select = rownames(tumor_matched_samples))
+
+for (i in 1:nrow(tumor_matched_samples)){
+  melted <- melt(tumor_matched_samples[i,])
+  melted <- cbind.data.frame(melted, SITE = c(rep(c("Brain", "Breast"), c(9, 9))))
+  pval <- wilcox.test(value ~ SITE, data=melted, paired=FALSE, exact=FALSE)$p.value
+  tumor_wilcoxon <- append(tumor_wilcoxon, pval)
+}
+
+tumor_wilcoxon <- data.frame(Gene = rownames(tumor_log), P.adj=p.adjust(tumor_wilcoxon, method="BH"))
+```
+
+## ER Analysis
+```{r enrichr}
+estrogen_pathways <- enriched[[1]] %>% filter(Term %in% c("Estrogen Response Early", "Estrogen Response Late"))
+estrogen_genes <- union("ESR1", unlist(str_split(estrogen_pathways$Genes, ";")))
+estrogen_genes <- estrogen_genes[estrogen_genes %in% rownames(tumor_log)]
+
+test_hm <- pheatmap(tumor_log[c("ERBB2", "ESR1"),], cluster_rows=FALSE, cluster_cols=TRUE, clustering_method = "ward.D2", 
+         show_colnames = FALSE, annotation_col = subset(tumor_metadata, select=c(SITE, Overall.Subtype.Primary)))
+
+# png("figs/nopdx/esr1-vs-erbb2.png", width=12, height=12, units = "in", res=300)
+# print(test_hm)
+# dev.off()
+
+```
+
+
+```{r all_brain_hm}
+immune_log_hm <- immune_log %>%
+  filter(rowSums(. <= log2(pseudocount))/ncol(.) < 0.1) %>%
+  select(any_of(rownames(immune_metadata[immune_metadata$SITE == "Brain",]))) %>%
+  select(any_of(rownames(immune_metadata[immune_metadata$Overall.Subtype.Primary %in% c('TNBC', 'HER2-/HR+'),])))
+
+dim(immune_log_hm)
+sample_percentzero <- colSums(immune_log_hm <= log2(pseudocount))/nrow(immune_log_hm)
+
+immune_log_hm <- immune_log_hm %>%
+  select(names(sample_percentzero[sample_percentzero <= 0.05]))
+dim(immune_log_hm)
+
+immune_cv <- apply(immune_log_hm, 1, calc_CV)
+immune_cv <- sort(immune_cv, decreasing = TRUE)
+immune_goi <- names(immune_cv[1:1000])
+
+km.out <- kmeans(immune_log_hm[immune_goi,], centers = 4, nstart = 20, algorithm="Lloyd", iter.max=50)
+immune_clusts <- as.data.frame(as.factor(km.out$cluster)) %>%
+  rename(cluster = `as.factor(km.out$cluster)`) %>%
+  arrange(cluster)
+
+standardized_immune <- t(apply(immune_log_hm[rownames(immune_clusts),], 1, cal_z_score))
+
+immune_cluster <- pheatmap(standardized_immune, show_rownames=FALSE, show_colnames=FALSE, clustering_method = "ward.D2",
+         cluster_rows = FALSE, cluster_cols = TRUE, annotation_col = subset(immune_metadata, select=c(PATIENT_SAMPLE, Overall.Subtype.Primary)),
+         annotation_row = immune_clusts, treeheight_row = 0)
+
+# png("figs/nopdx/immune-brain-tnbc-vs-tpbc-gene-clustering.png", width=12, height=12, units = "in", res=300)
+# print(immune_cluster)
+# dev.off()
+```
+
+```{r all_brain_volcano}
+immune_melted <- melt(immune_log %>% 
+    select(any_of(rownames(immune_metadata[immune_metadata$SITE == 'Brain',]))) %>%
+    select(any_of(rownames(immune_metadata[immune_metadata$Overall.Subtype.Primary %in% c('TNBC', 'HER2+/HR+'),]))) %>%
+    rownames_to_column()) %>%
+                  rename(Gene = rowname, Sample = variable, Value=value)
+
+immune_meta <- immune_metadata %>%
+  rownames_to_column("Sample") %>%
+  mutate(PATIENT_ID = gsub("_BR", "", SAMPLE_ID))
+
+immune_melted <- immune_melted %>%
+  inner_join(immune_meta, by = "Sample") %>%
+  filter(SITE %in% c("Brain", "Breast"))
+
+immune_lme <- data.frame(Estimate = c(), Std.Error = c(), df = c(), `t value` = c(), `Pr(>|t|)` = c())
+
+for(i in 1:length(unique(immune_melted$Gene))){
+  immunetest <- immune_melted %>% filter(Gene == unique(immune_melted$Gene)[i])
+  fm <- lmer(Value ~ Overall.Subtype.Primary + (1 | PATIENT_ID), data=immunetest)
+  immune_lme <- rbind(immune_lme, lmerTest:::get_coefmat(fm)[2,])
+}
+
+colnames(immune_lme) <- c("Log2FC", "Std.Error", "df", "t value", "Pr(>|t|)")
+rownames(immune_lme) <- unique(immune_melted$Gene)
+
+immune_lme$FDR <- p.adjust(immune_lme$`Pr(>|t|)`, method = "fdr")
+
+immune_lme
+
+immune_lme$diffexpressed <- "NO"
+immune_lme$diffexpressed[immune_lme$Log2FC > 1 & immune_lme$FDR < 0.05] <- "UP"
+immune_lme$diffexpressed[immune_lme$Log2FC < -1 & immune_lme$FDR < 0.05] <- "DOWN"
+
+immune_lme$delabel <- NA
+immune_lme$delabel[immune_lme$diffexpressed != "NO"] <- rownames(immune_lme)[immune_lme$diffexpressed != "NO"]
+
+#### labeling by GSEA ####
+
+for(i in 1:length(gse_immune@result$core_enrichment)){
+  immune_gse_test <- strsplit(gse_immune@result$core_enrichment[i], split = "/")[[1]]
+
+  immune_lme$gsea <- "NO"
+  immune_lme$gsea[rownames(immune_lme) %in% immune_gse_test] <- gse_immune@result$ID[i]
+
+  immune_lme$delabel <- NA
+  immune_lme$delabel[immune_lme$gsea != "NO"] <- rownames(immune_lme)[immune_lme$gsea != "NO"]
+
+##########################
+
+  p <- ggplot(data=immune_lme, aes(x=Log2FC, y=-log10(FDR), col=gsea, label=delabel)) +
+        geom_point() + 
+        theme_minimal() +
+        geom_text_repel() +
+        scale_color_manual(values=c("blue", "grey", "red")) +
+        geom_vline(xintercept=c(-1, 1), col="red") +
+        geom_hline(yintercept=-log10(0.05), col="red")
+
+  print(p)
+  # ggsave(paste("figs/nopdx/immune-gsea-tnbc-vs-tpbc-volcano", ".png", sep=""))
+
+}
+# 
+  
+protlist_immune <- immune_lme$Log2FC
+names(protlist_immune) <- rownames(immune_lme)
+protlist_immune <- sort(protlist_immune, decreasing=TRUE)
+
+gse_immune <- GSEA(protlist_immune, exponent =1, minGSSize = 10, maxGSSize = 2000, eps=1e-10,
+                   pvalueCutoff = 0.25, pAdjustMethod= "BH", TERM2GENE = geneset)
+
+gse_immune@result[,2:ncol(gse_immune)]
+
+clusterProfiler::dotplot(gse_immune, showCategory=25)
+
+# ggsave("figs/nopdx/immune-brain-dotplot-tnbc-vs-tpbc.png", clusterProfiler::dotplot(gse_immune, showCategory=25), width=15, height=15, units="in")
+
+# ggsave("figs/nopdx/immune-tnbc-lme-volcano.png")
+# write.csv(immune_lme, "tables/nopdx/immune-lme-volcano-deg.csv", sep=",", row.names = T)
+```
