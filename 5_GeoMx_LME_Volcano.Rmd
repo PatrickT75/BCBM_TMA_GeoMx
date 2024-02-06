@@ -66,13 +66,18 @@ immune_meta <- immune_metadata %>%
 
 immune_melted <- immune_melted %>%
   inner_join(immune_meta, by = "Sample") %>%
-  filter(SITE %in% c("Brain", "Breast"))
+  filter(SITE %in% c("Brain", "Breast")) # %>%
+  # mutate(HER2.lumped = case_when(
+  #   Overall.Subtype.Primary == "HER2+/HR-" ~ "HER2-positive",
+  #   Overall.Subtype.Primary == "HER2+/HR+" ~ "HER2-positive",
+  #   Overall.Subtype.Primary == "TNBC" ~ "HER2-negative"
+  # ))
 
 immune_lme <- data.frame(Estimate = c(), Std.Error = c(), df = c(), `t value` = c(), `Pr(>|t|)` = c())
 
 for(i in 1:length(unique(immune_melted$Gene))){
   immunetest <- immune_melted %>% filter(Gene == unique(immune_melted$Gene)[i])
-  fm <- lmer(Value ~ SITE + (1 | PATIENT_ID), data=immunetest)
+  fm <- lmer(Value ~ SITE + (1 | SAMPLE_ID), data=immunetest)
   immune_lme <- rbind(immune_lme, lmerTest:::get_coefmat(fm)[2,])
 }
 
@@ -102,7 +107,7 @@ tumor_lme <- data.frame(Estimate = c(), Std.Error = c(), df = c(), `t value` = c
 
 for(i in 1:length(unique(tumor_melted$Gene))){
   tumortest <- tumor_melted %>% filter(Gene == unique(tumor_melted$Gene)[i])
-  fm <- lmer(Value ~ SITE + (1 | PATIENT_ID), data=tumortest)
+  fm <- lmer(Value ~ SITE + (1 | PATIENT_SAMPLE), data=tumortest)
   # if (i < 4){
   #   print(model_performance(fm))
   # }
@@ -133,7 +138,7 @@ gse_immune <- GSEA(protlist_immune, exponent =1, minGSSize = 10, maxGSSize = 200
 
 gse_immune@result
 
-# ggsave("figs/nopdx/immune-tnbc-dotplot-brain-vs-breast.png", clusterProfiler::dotplot(gse_immune, showCategory=25), width=15, height=15, units="in")
+# ggsave("figs/nopdx/immune-brain-dotplot-tnbc-vs-her2pos.png", clusterProfiler::dotplot(gse_immune, showCategory=25), width=15, height=15, units="in")
 
 # for (i in 1:nrow(gse_immune@result)){
 #   p <- gseaplot2(gse_immune, geneSetID = i, base_size=15, title = paste(gse_immune@result[i,1], ", p-adj: ", gse_immune@result[i,7], sep=""))
@@ -153,7 +158,7 @@ gse_tumor <- GSEA(protlist_tumor, exponent =1, minGSSize = 10, maxGSSize = 2000,
 
 gse_tumor@result
 
-# ggsave("figs/nopdx/tumor-tnbc-dotplot-brain-vs-breast.png", clusterProfiler::dotplot(gse_tumor, showCategory=25), width=15, height=15, units="in")
+# ggsave("figs/nopdx/tumor-brain-dotplot-tnbc-vs-her2pos.png", clusterProfiler::dotplot(gse_tumor, showCategory=25), width=15, height=15, units="in")
 
 # for (i in 1:nrow(gse_tumor@result)){
   # p <- gseaplot2(gse_tumor, geneSetID = i, base_size=15, title = paste(gse_tumor@result[i,1], ", p-adj: ", gse_tumor@result[i,7], sep=""))
@@ -172,6 +177,14 @@ immune_lme$diffexpressed <- "NO"
 immune_lme$diffexpressed[immune_lme$Log2FC > 1 & immune_lme$FDR < 0.05] <- "UP"
 immune_lme$diffexpressed[immune_lme$Log2FC < -1 & immune_lme$FDR < 0.05] <- "DOWN"
 
+immune_gse_test <- strsplit(gse_immune@result$core_enrichment[2], split = "/")[[1]]
+  
+immune_lme$gsea <- "NO"
+immune_lme$gsea[rownames(immune_lme) %in% immune_gse_test] <- gse_immune@result$ID[2]
+
+# immune_lme$delabel <- NA
+# immune_lme$delabel[immune_lme$gsea != "NO"] <- rownames(immune_lme)[immune_lme$gsea != "NO"]
+
 immune_lme$delabel <- NA
 immune_lme$delabel[immune_lme$diffexpressed != "NO"] <- rownames(immune_lme)[immune_lme$diffexpressed != "NO"]
 
@@ -179,10 +192,11 @@ p <- ggplot(data=immune_lme, aes(x=Log2FC, y=-log10(FDR), col=diffexpressed, lab
         geom_point() + 
         theme_minimal() +
         geom_text_repel() +
-        scale_color_manual(values=c("blue", "black", "red")) +
+        scale_color_manual(values=c("blue", "grey", "red")) +
         geom_vline(xintercept=c(-1, 1), col="red") +
         geom_hline(yintercept=-log10(0.05), col="red")
 
+print(p)
 # ggsave("figs/nopdx/immune-gsea-volcano.png", sep=""))
 # print(p)
 # write.csv(immune_lme, "tables/nopdx/immune-lme-volcano-deg.csv", sep=",", row.names = T)
@@ -191,26 +205,34 @@ p <- ggplot(data=immune_lme, aes(x=Log2FC, y=-log10(FDR), col=diffexpressed, lab
 ```{r tumor_volcano}
 ## labeling by GSEA
 
-for(i in 1:length(gse_tumor@result$core_enrichment)){
-  tumor_gse_test <- strsplit(gse_tumor@result$core_enrichment[i], split = "/")[[1]]
+# for(i in 1:length(gse_tumor@result$core_enrichment)){
+  # tumor_gse_test <- strsplit(gse_tumor@result$core_enrichment[i], split = "/")[[1]]
+
+  tumor_lme$diffexpressed <- "NO"
+  tumor_lme$diffexpressed[tumor_lme$Log2FC > 1 & tumor_lme$FDR < 0.05] <- "UP"
+  tumor_lme$diffexpressed[tumor_lme$Log2FC < -1 & tumor_lme$FDR < 0.05] <- "DOWN"
   
-  tumor_lme$gsea <- "NO"
-  tumor_lme$gsea[rownames(tumor_lme) %in% tumor_gse_test] <- gse_tumor@result$ID[i]
+  # tumor_lme$gsea <- "NO"
+  # tumor_lme$gsea[rownames(tumor_lme) %in% tumor_gse_test] <- gse_tumor@result$ID[i]
 
+  # tumor_lme$delabel <- NA
+  # tumor_lme$delabel[tumor_lme$gsea != "NO"] <- rownames(tumor_lme)[tumor_lme$gsea != "NO"]
+  
   tumor_lme$delabel <- NA
-  tumor_lme$delabel[tumor_lme$gsea != "NO"] <- rownames(tumor_lme)[tumor_lme$gsea != "NO"]
+  tumor_lme$delabel[tumor_lme$diffexpressed != "NO"] <- rownames(tumor_lme)[tumor_lme$diffexpressed != "NO"]
 
-  p <- ggplot(data=tumor_lme, aes(x=Log2FC, y=-log10(FDR), col=gsea, label=delabel)) +
+  p <- ggplot(data=tumor_lme, aes(x=Log2FC, y=-log10(FDR), col=diffexpressed, label=delabel)) +
         geom_point() + 
         theme_minimal() +
         geom_text_repel() +
-        scale_color_manual(values=c("blue", "grey", "red")) +
+        scale_color_manual(values=c("blue", "black", "red")) +
         geom_vline(xintercept=c(-1, 1), col="red") +
         geom_hline(yintercept=-log10(0.05), col="red")
   
   print(p)
   # ggsave(paste("figs/nopdx/tumor-gsea-volcano-labelled_", gse_tumor@result$ID[i], ".png", sep=""))
-}
+  # ggsave("figs/nopdx/tumor-gsea-tnbc-vs-her2pos-volcano.png")
+# }
 
 # write.csv(tumor_lme, "tables/nopdx/tumor-lme-volcano-deg.csv", sep=",", row.names = T)
 ```

@@ -32,12 +32,13 @@ immune_metadata <- read.csv('tables/nopdx/immune-metadata.csv', row.names=1) %>%
   mutate(PATIENT_SAMPLE = gsub("_BR", "", SAMPLE_ID)) %>%
   select(-c("PC1", "PC2"))
 rownames(immune_metadata) <- gsub("-", ".", rownames(immune_metadata))
+names(immune_metadata)[names(immune_metadata) == 'HER2.Low.Positive.HER2.0.Subgroup.Status.PRIMARY'] <- 'HER2.primary'
   
 tumor_metadata <- read.csv('tables/nopdx/tumor-metadata.csv', row.names=1) %>%
   mutate(PATIENT_SAMPLE = gsub("_BR", "", SAMPLE_ID)) %>%
   select(-c("PC1", "PC2"))
-
 rownames(tumor_metadata) <- gsub("-", ".", rownames(tumor_metadata))
+names(tumor_metadata)[names(tumor_metadata) == 'HER2.Low.Positive.HER2.0.Subgroup.Status.PRIMARY'] <- 'HER2.primary'
 
 # venn_genes <- read.csv('tables/all-brain-breast-lung-genes.csv')
 
@@ -181,19 +182,22 @@ immune_cv <- sort(immune_cv, decreasing = TRUE)
 immune_goi <- names(immune_cv[1:1000])
 
 km.out <- kmeans(immune_log_hm[immune_goi,], centers = 5, nstart = 20, algorithm="Lloyd", iter.max=50)
-immune_clusts <- as.data.frame(as.factor(km.out$cluster)) %>% 
-  rename(cluster = `as.factor(km.out$cluster)`) %>%
-  arrange(cluster)
+
+immune_clusts <- as.data.frame(as.factor(km.out$cluster))
+colnames(immune_clusts) <- c("cluster")
+immune_clusts <- immune_clusts %>% arrange(cluster)
 
 standardized_immune <- t(apply(immune_log_hm[rownames(immune_clusts),], 1, cal_z_score))
 
 immune_cluster <- pheatmap(standardized_immune, show_rownames=FALSE, show_colnames=FALSE, clustering_method = "ward.D2",
-         cluster_rows = FALSE, cluster_cols = TRUE, annotation_col = subset(immune_metadata, select=c(SITE, PATIENT_SAMPLE, HER2.Low.Positive.HER2.0.Subgroup.Status.PRIMARY)),
+         cluster_rows = FALSE, cluster_cols = TRUE, annotation_col = subset(immune_metadata, select=c(SITE, HER2.primary, PATIENT_SAMPLE)),
          annotation_row = immune_clusts, treeheight_row = 0)
 
 # png("figs/nopdx/immune-tnbc-gene-clustering.png", width=12, height=12, units = "in", res=300)
 # print(immune_cluster)
 # dev.off()
+
+do_enrichr(rownames(immune_clusts %>% filter(cluster == 5)))
 ```
 
 ### *Tumor*
@@ -203,8 +207,8 @@ immune_cluster <- pheatmap(standardized_immune, show_rownames=FALSE, show_colnam
 tumor_log_hm <- tumor_log %>% 
   filter(rowSums(. <= log2(pseudocount))/ncol(.) < 0.1) %>%
   select(any_of(rownames(tumor_metadata[tumor_metadata$SITE %in% c("Brain", "Breast"),]))) %>%
-  select(any_of(rownames(tumor_metadata[tumor_metadata$Overall.Subtype.Primary == "TNBC",]))) # %>%
-  # select(any_of(rownames(tumor_metadata[tumor_metadata$PATIENT_SAMPLE != "BCBM_14",])))
+  select(any_of(rownames(tumor_metadata[tumor_metadata$Overall.Subtype.Primary == "TNBC",]))) %>%
+  select(any_of(rownames(tumor_metadata[tumor_metadata$PATIENT_SAMPLE != "BCBM_14",])))
 
 sample_percentzero <- colSums(tumor_log_hm <= log2(pseudocount))/nrow(tumor_log_hm)
 
@@ -243,9 +247,9 @@ km.out <- kmeans(tumor_log_hm[tumor_goi,], centers = 5, nstart = 20, algorithm="
 #   mutate(hc.out = as.factor(hc.out)) %>%
 #   rename(cluster = hc.out)
 
-tumor_clusts <- as.data.frame(as.factor(km.out$cluster)) %>% 
-  rename(cluster = `as.factor(km.out$cluster)`) %>%
-  arrange(cluster)
+tumor_clusts <- as.data.frame(as.factor(km.out$cluster))
+colnames(tumor_clusts) <- c("cluster")
+tumor_clusts <- tumor_clusts %>% arrange(cluster)
 
 # tumor_cluster <- pheatmap(tumor_log_hm[rownames(tumor_clusts),], cluster_rows = hclust_tree, cluster_cols = TRUE, 
 #                           annotation_row = tumor_clusts, show_rownames=FALSE, show_colnames=FALSE, annotation_col = subset(tumor_metadata, select=c(SITE, SAMPLE_ID)),
@@ -254,7 +258,7 @@ tumor_clusts <- as.data.frame(as.factor(km.out$cluster)) %>%
 standardized_tumor <- t(apply(tumor_log_hm[rownames(tumor_clusts),], 1, cal_z_score))
 
 tumor_cluster <- pheatmap(standardized_tumor, show_rownames=FALSE, show_colnames=FALSE, clustering_method = "ward.D2",
-         cluster_rows = FALSE, cluster_cols = TRUE, annotation_col = subset(tumor_metadata, select=c(SITE, HER2.Low.Positive.HER2.0.Subgroup.Status.PRIMARY, PATIENT_SAMPLE)),
+         cluster_rows = FALSE, cluster_cols = TRUE, annotation_col = subset(tumor_metadata, select=c(SITE, HER2.primary, PATIENT_SAMPLE)),
          annotation_row = tumor_clusts, treeheight_row = 0)
 
 

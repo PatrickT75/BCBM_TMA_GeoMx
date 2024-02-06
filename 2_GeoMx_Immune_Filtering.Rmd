@@ -20,6 +20,7 @@ library(pheatmap)
 library(lmerTest)
 library(reshape2)
 library(cowplot)
+library(RColorBrewer)
 
 pseudocount <- 1
 
@@ -28,6 +29,11 @@ log_adj <- function(x){
 }
 
 calc_CV <- function(x) {sd(x) / mean(x)}
+
+cal_z_score <- function(x) {
+  (x - mean(x)) / sd(x)
+}
+
 ```
 
 ## Immune-Rich
@@ -223,7 +229,7 @@ axis(tick=FALSE, side=1)
 # write.csv(subset(pData(immune_demoData), select=-c(LOQ)), "tables/strict-immune-metadata.csv")
 ```
 
-```{r deconvolution}
+```{r deconvolution_immune}
 library(SpatialDecon)
 bg <- derive_GeoMx_background(norm = immune_demoData@assayData$q_norm,
                               probepool = fData(immune_demoData)$Module,
@@ -236,13 +242,76 @@ signif(safeTME[seq_len(3), seq_len(3)], 2)
 # heatmap(sweep(safeTME, 1, apply(safeTME, 1, max), "/"),
 #         labRow = NA, margins = c(10, 5))
 
-res <- runspatialdecon(object = immune_demoData,
+res_immune_brain <- runspatialdecon(object = immune_demoData[, pData(immune_demoData)$SITE == "Brain"],
                       norm_elt = "q_norm",
                       raw_elt = "exprs",
                       X = safeTME,
                       align_genes = TRUE)
 
-heatmap(t(res$beta), cexCol = 0.5, cexRow = 0.7, margins = c(10,7))
+res_immune_breast <- runspatialdecon(object = immune_demoData[, pData(immune_demoData)$SITE == "Breast"],
+                      norm_elt = "q_norm",
+                      raw_elt = "exprs",
+                      X = safeTME,
+                      align_genes = TRUE)
+
+# png("figs/nopdx/deconvolution-immune-profile-brain.png", width=10, height=10, units="in", res=300)
+heatmap(t(res_immune_brain$beta), cexCol = 0.5, cexRow = 0.7, margins = c(10,7))
+# dev.off()
+
+# png("figs/nopdx/deconvolution-immune-profile-breast.png", width=10, height=10, units="in", res=300)
+heatmap(t(res_immune_breast$beta), cexCol = 0.5, cexRow = 0.7, margins = c(10,7))
+# dev.off()
+
+# ## cluster res_immune
+# km.out <- kmeans(res_immune$beta, centers = 3, nstart = 20, algorithm="Lloyd", iter.max=50)
+# 
+# combined_clusts_immune <- as.data.frame(as.factor(km.out[["cluster"]]))
+# colnames(combined_clusts_immune) <- c("cluster")
+# combined_clusts_immune$cluster <- sort(combined_clusts_immune$cluster)
+# 
+# # standardize across cell type NOT sample
+# standardized_immune <- apply(t(res_immune$beta), 1, cal_z_score)
+# # standardized_immune <- apply(t(res_immune$beta[rownames(combined_clusts_immune),]), 1, cal_z_score)
+# 
+# combined_cluster_immune <- pheatmap(t(standardized_immune), color = colorRampPalette(c("#F9FABC", "#E29E6E", "#C13F34"))(50), show_colnames=FALSE, cluster_cols = FALSE, cluster_rows = FALSE) # , annotation_col = combined_clusts_immune)
+#                                    
+#                                    # , show_rownames=FALSE, show_colnames=FALSE, clustering_method = "ward.D2",cluster_rows = FALSE, cluster_cols = TRUE, annotation_row = combined_clusts_immune, treeheight_row = 0)
+```
+
+```{r deconvolution_brain}
+bg <- derive_GeoMx_background(norm = immune_demoData@assayData$q_norm,
+                              probepool = fData(immune_demoData)$Module,
+                              negnames = "NegProbe-WTX")
+
+load("src/Brain_AllenBrainAtlas.RData")
+signif(profile_matrix[seq_len(3), seq_len(3)], 2)
+
+# heatmap(sweep(as.matrix(profile_matrix), 1, apply(profile_matrix, 1, max), "/"),
+#         labRow = NA, margins = c(10, 5))
+
+res_brain <- runspatialdecon(object = immune_demoData,
+                      norm_elt = "q_norm",
+                      raw_elt = "exprs",
+                      X = as.matrix(profile_matrix),
+                      align_genes = TRUE)
+
+res_brain_small <- res_brain$beta[,c("Microglia", "Endothelial", "L5.ET", "L5.6.IT.Car3", "L6b", "Astrocyte", "VLMC", "Oligodendrocyte", "L4.IT", "PAX6", "Pericyte")] 
+
+## cluster res_immune
+km.out <- kmeans(res_brain_small, centers = 3, nstart = 20, algorithm="Lloyd", iter.max=50)
+
+combined_clusts_brain <- as.data.frame(as.factor(km.out[["cluster"]]))
+colnames(combined_clusts_brain) <- c("cluster")
+combined_clusts_brain$cluster <- sort(combined_clusts_brain$cluster)
+
+standardized_brain <- apply(t(res_brain_small[rownames(combined_clusts_brain),]), 1, cal_z_score)
+
+combined_cluster_brain <- pheatmap(t(standardized_brain), show_colnames=FALSE, cluster_cols = FALSE, annotation_col = combined_clusts_brain)
+                                   
+           
+# png("figs/nopdx/deconvolution-brain-profile.png", width=10, height=10, units="in", res=300)
+# heatmap(t(res_brain_small), cexCol = 0.5, cexRow = 0.7, margins = c(10,7))
+# dev.off()
 ```
 
 ```{r PCA_filtered_genes}
@@ -276,16 +345,17 @@ ggplot(temp,
 
 # ggsave("figs/strict-immune-pca-by-sample-id.png")
 
-scree <- summary(pc_out)[["importance"]][2:3,]
-scree <- as.data.frame(t(scree))
-scree <- scree %>%
-  rownames_to_column(var="PC") %>%
-  mutate(PC = factor(PC, levels=PC)) %>%
-  rename(Proportion = `Proportion of Variance`, Cumulative = `Cumulative Proportion`)
-
-ggplot(scree[1:10,]) + geom_col(aes(x=PC, y=Proportion)) +
-geom_line(aes(x=PC, y=Cumulative), color='red', size=1, group=1) +
-      geom_point(aes(x=PC, y=Cumulative), color='red', size=3) + theme_bw()
+# scree <- summary(pc_out)[["importance"]][2:3,]
+# scree <- as.data.frame(t(scree))
+# scree <- scree %>%
+#   rownames_to_column(var="PC") %>%
+#   mutate(PC = factor(PC, levels=PC))
+# 
+# colnames(scree) <- c("Proportion", "Cumulative")
+# 
+# ggplot(scree[1:10,]) + geom_col(aes(x=PC, y=Proportion)) +
+# geom_line(aes(x=PC, y=Cumulative), color='red', size=1, group=1) +
+#       geom_point(aes(x=PC, y=Cumulative), color='red', size=3) + theme_bw()
 
 # ggsave("figs/strict-immune-scree-plot.png")
 ```

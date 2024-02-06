@@ -219,29 +219,38 @@ axis(side=1, tick=FALSE)
 ```{r PCA_filtered_genes}
 pcamat <- assayDataElement(tumor_demoData, elt="log_q")
 
+# only to filter TNBC
+pData(tumor_demoData)[is.na(pData(tumor_demoData))] <- "None"
+tumor_tnbc <- tumor_demoData[, pData(tumor_demoData)$`Overall Subtype Primary` == "TNBC"]
+
+
+pcamat <- assayDataElement(tumor_tnbc, elt = "log_q")
+pcamat <- pcamat[ , colSums(is.na(pcamat))==0]
+  
 pca_cv <- apply(pcamat, 1, calc_CV)
 pca_cv <- sort(pca_cv, decreasing = TRUE)
 pca_goi <- names(pca_cv)[1:1000]
 
 pc_out <- prcomp(t(pcamat[pca_goi,]), scale.=FALSE, center=TRUE)
-pData(tumor_demoData)[, c("PC1", "PC2")] <- pc_out$x[,c("PC1", "PC2")]
+pData(tumor_tnbc)[, c("PC1", "PC2")] <- pc_out$x[,c("PC1", "PC2")]
 
-temp <- pData(tumor_demoData)
-sampleids <- temp$SAMPLE_ID
-sampleids <- gsub("_BR", "", sampleids)
-brs <- sampleids %in% c("BCBM_1", "BCBM_22", "BCBM_27")
-sampleids[!brs] <- "None"
-temp$MATCH <- sampleids
+# temp <- pData(tumor_demoData)
+# sampleids <- temp$SAMPLE_ID
+# sampleids <- gsub("_BR", "", sampleids)
+# brs <- sampleids %in% c("BCBM_1", "BCBM_22", "BCBM_27")
+# sampleids[!brs] <- "None"
+# temp$MATCH <- sampleids
 
-dplyr::count(temp, SITE, MATCH)
+# dplyr::count(temp, SITE, MATCH)
              
-ggplot(temp,
-       aes(x = PC1, y = PC2, color=MATCH)) +
+ggplot(tumor_tnbc,
+       aes(x = PC1, y = PC2, color=SITE, label=ifelse(PC1 < -20, SAMPLE_ID, ''))) +
     geom_point(size = 2) +
+    geom_text() +
     theme_bw() +
     xlab(paste("PC1 (", 100*summary(pc_out)[["importance"]][2,1], "%)", sep="")) +
-    ylab(paste("PC2 (", 100*summary(pc_out)[["importance"]][2,2], "%)", sep="")) +
-    scale_color_manual(values=c(None='grey', BCBM_1='purple', BCBM_22='green', BCBM_27='red'))
+    ylab(paste("PC2 (", 100*summary(pc_out)[["importance"]][2,2], "%)", sep="")) # +
+    # scale_color_manual(values=c(None='grey', BCBM_1='purple', BCBM_22='green', BCBM_27='red'))
 
 # ggsave("figs/strict-tumor-pca-by-sample-id.png")
 
@@ -252,7 +261,7 @@ scree <- scree %>%
   mutate(PC = factor(PC, levels=PC)) %>%
   rename(Proportion = `Proportion of Variance`, Cumulative = `Cumulative Proportion`)
 
-ggplot(scree[1:10,]) + geom_col(aes(x=PC, y=Proportion)) +
+ggplot(scree[1:10,]) + geom_col(aes(x=PC, y=Proportion, )) +
 geom_line(aes(x=PC, y=Cumulative), color='red', size=1, group=1) +
       geom_point(aes(x=PC, y=Cumulative), color='red', size=3) + theme_bw()
 

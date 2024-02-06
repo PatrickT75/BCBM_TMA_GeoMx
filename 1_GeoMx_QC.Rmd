@@ -390,13 +390,16 @@ dplyr::count(pData(target_demoData), Comment, SITE)
 ```{r PCA_filtered_genes}
 pcamat <- assayDataElement(target_demoData, elt="log_q")
 
+target_small <- target_demoData[, pData(target_demoData)$SITE != "PDX"]
+pcamat <- assayDataElement(target_small, elt="log_q")
+
 pca_cv <- apply(pcamat, 1, calc_CV)
 pca_cv <- sort(pca_cv, decreasing = TRUE)
 pca_goi <- names(pca_cv)[1:1000]
 
 pc_out <- prcomp(t(pcamat[pca_goi,]), scale.=FALSE, center=TRUE)
 
-pData(target_demoData)[, c("PC1", "PC2")] <- pc_out$x[,c("PC1", "PC2")]
+pData(target_small)[, c("PC1", "PC2")] <- pc_out$x[,c("PC1", "PC2")]
 
 temp <- pData(target_demoData)
 sampleids <- temp$SAMPLE_ID
@@ -407,7 +410,7 @@ temp$MATCH <- sampleids
 
 dplyr::count(temp, SITE, MATCH)
              
-ggplot(temp,
+ggplot(target_small,
        aes(x = PC1, y = PC2, color=SITE)) +
     geom_point(size = 2) +
     theme_bw() +
@@ -415,20 +418,22 @@ ggplot(temp,
     ylab(paste("PC2 (", 100*summary(pc_out)[["importance"]][2,2], "%)", sep="")) # +
     # scale_color_manual(values=c(None='grey', BCBM_1='purple', BCBM_22='green', BCBM_27='red'))
 
-# ggsave("figs/strict-all-pca-by-site.png")
+# ggsave("figs/nopdx/all-pca-by-patient-tumor.png")
 
-scree <- summary(pc_out)[["importance"]][2:3,]
-scree <- as.data.frame(t(scree))
-scree <- scree %>%
-  rownames_to_column(var="PC") %>%
-  mutate(PC = factor(PC, levels=PC)) %>%
-  rename(Proportion = `Proportion of Variance`, Cumulative = `Cumulative Proportion`)
-
-ggplot(scree[1:10,]) + geom_col(aes(x=PC, y=Proportion)) +
-geom_line(aes(x=PC, y=Cumulative), color='red', size=1, group=1) +
-      geom_point(aes(x=PC, y=Cumulative), color='red', size=3) + theme_bw()
+# scree <- summary(pc_out)[["importance"]][2:3,]
+# scree <- as.data.frame(t(scree))
+# scree <- scree %>%
+#   rownames_to_column(var="PC") %>%
+#   mutate(PC = factor(PC, levels=PC)) %>%
+#   rename(Proportion = `Proportion of Variance`, Cumulative = `Cumulative Proportion`)
+# 
+# ggplot(scree[1:10,]) + geom_col(aes(x=PC, y=Proportion)) +
+# geom_line(aes(x=PC, y=Cumulative), color='red', size=1, group=1) +
+#       geom_point(aes(x=PC, y=Cumulative), color='red', size=3) + theme_bw()
 
 # ggsave("figs/strict-all-scree-plot.png")
+```
 
+```{r save}
 save.image(file = "all_qc.RData")
 ```

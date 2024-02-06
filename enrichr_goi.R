@@ -17,6 +17,7 @@ ggvenn(overlap)
 ## find genes of interest
 genes_of_interest <- setdiff(v3, union(v4, union(v2, v1)))
 
+do_enrichr <- function(genelist){
 if (websiteLive) {
   ###### define list of genes
   
@@ -27,11 +28,14 @@ if (websiteLive) {
   # enriched <- enrichr(rownames(tumor_lme %>% filter(diffexpressed == "UP")), dbs)
   
   ## genes from a sample-heatmap cluster
-  enriched <- enrichr(rownames(immune_clusts %>% filter(cluster == 4)), dbs)
+  
+  genelist <- genelist
+  enriched <- enrichr(genelist, dbs)
   
   for(db in dbs){
     print(plotEnrich(enriched[[db]], showTerms = 20, numChar = 40, y = "Count", orderBy = "P.value"))
     # ggsave("figs/heatmap-enrichr/nopdx-enrichr/immune-brain-tnbc-vs-hrpos-cluster4.png")
     # write.csv(enriched[[db]], paste("tables/venn/all-tumor-genes-", db, ".csv", sep=""), row.names=FALSE)
   }
+}
 }
