@@ -9,13 +9,13 @@ if (websiteLive) {
 dbs <- c("MSigDB_Hallmark_2020")
 
 ## find overlaps
-overlap <- list(Tumor.Brain=v1, Tumor.Breast=v2, Immune.Breast=v3, Immune.Brain=v4)
-ggvenn(overlap)
+# overlap <- list(Tumor.Brain=v1, Tumor.Breast=v2, Immune.Breast=v3, Immune.Brain=v4)
+# ggvenn(overlap)
 # ggsave("figs/venn/tumor-brain-vs-breast-venn-diagram.png")
 
 
 ## find genes of interest
-genes_of_interest <- setdiff(v3, union(v4, union(v2, v1)))
+# genes_of_interest <- setdiff(v3, union(v4, union(v2, v1)))
 
 do_enrichr <- function(genelist){
 if (websiteLive) {

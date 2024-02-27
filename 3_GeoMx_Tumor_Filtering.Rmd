@@ -96,6 +96,7 @@ dplyr::count(pData(tumor_demoData), Comment, DetectionThreshold)
 
 ```{r Tumor_gene_filtering}
 tdd <- tumor_demoData[, pData(tumor_demoData)$GeneDetectionRate >= 0.1 & pData(tumor_demoData)$Flag == "PASS"]
+tdd <- tumor_demoData[, pData(tumor_demoData)$SITE != "PDX"]
 
 # Calculate detection rate:
 LOQ_Mat <- LOQ_Mat[, colnames(tdd)]
@@ -216,23 +217,43 @@ axis(side=1, tick=FALSE)
 # write.csv(subset(pData(tumor_demoData), select=-c(LOQ)), "tables/strict-tumor-metadata.csv")
 ```
 
+```{r pam50}
+library(genefu)
+data(pam50.robust)
+
+
+ddata <- t(exprs(tumor_demoData)) 
+ddemo <- pData(tumor_demoData)
+dannot <- fData(tumor_demoData) %>%
+  dplyr::rename(EntrezGene.ID = GeneID) %>%
+  dplyr::rename(probe = TargetName)
+dannot[dannot$probe == 'ESR1',]
+
+PAM50Preds<-intrinsic.cluster.predict(sbt.model=pam50, data=ddata,
+                                         annot=dannot, do.mapping=TRUE,
+                                         verbose=TRUE)
+
+pData(tumor_demoData)$PAM50 <- PAM50Preds$subtype
+# write.csv(subset(pData(tumor_demoData), select=-c(LOQ)), "tables/nopdx/tumor-metadata-pam50.csv")
+```
+
 ```{r PCA_filtered_genes}
 pcamat <- assayDataElement(tumor_demoData, elt="log_q")
 
 # only to filter TNBC
-pData(tumor_demoData)[is.na(pData(tumor_demoData))] <- "None"
-tumor_tnbc <- tumor_demoData[, pData(tumor_demoData)$`Overall Subtype Primary` == "TNBC"]
+# pData(tumor_demoData)[is.na(pData(tumor_demoData))] <- "None"
+# tumor_tnbc <- tumor_demoData[, pData(tumor_demoData)$`Overall Subtype Primary` == "TNBC"]
 
 
-pcamat <- assayDataElement(tumor_tnbc, elt = "log_q")
-pcamat <- pcamat[ , colSums(is.na(pcamat))==0]
+# pcamat <- assayDataElement(pcamat, elt = "log_q")
+# pcamat <- pcamat[ , colSums(is.na(pcamat))==0]
   
 pca_cv <- apply(pcamat, 1, calc_CV)
 pca_cv <- sort(pca_cv, decreasing = TRUE)
 pca_goi <- names(pca_cv)[1:1000]
 
 pc_out <- prcomp(t(pcamat[pca_goi,]), scale.=FALSE, center=TRUE)
-pData(tumor_tnbc)[, c("PC1", "PC2")] <- pc_out$x[,c("PC1", "PC2")]
+pData(tumor_demoData)[, c("PC1", "PC2")] <- pc_out$x[,c("PC1", "PC2")]
 
 # temp <- pData(tumor_demoData)
 # sampleids <- temp$SAMPLE_ID
@@ -243,27 +264,26 @@ pData(tumor_tnbc)[, c("PC1", "PC2")] <- pc_out$x[,c("PC1", "PC2")]
 
 # dplyr::count(temp, SITE, MATCH)
              
-ggplot(tumor_tnbc,
-       aes(x = PC1, y = PC2, color=SITE, label=ifelse(PC1 < -20, SAMPLE_ID, ''))) +
+ggplot(pData(tumor_demoData),
+       aes(x = PC1, y = PC2, color=`PAM50`)) +
     geom_point(size = 2) +
-    geom_text() +
     theme_bw() +
     xlab(paste("PC1 (", 100*summary(pc_out)[["importance"]][2,1], "%)", sep="")) +
     ylab(paste("PC2 (", 100*summary(pc_out)[["importance"]][2,2], "%)", sep="")) # +
     # scale_color_manual(values=c(None='grey', BCBM_1='purple', BCBM_22='green', BCBM_27='red'))
 
-# ggsave("figs/strict-tumor-pca-by-sample-id.png")
+# ggsave("figs/nopdx/tumor-pca-by-pam50.png", height=15, width=15, unit="in")
 
-scree <- summary(pc_out)[["importance"]][2:3,]
-scree <- as.data.frame(t(scree))
-scree <- scree %>%
-  rownames_to_column(var="PC") %>%
-  mutate(PC = factor(PC, levels=PC)) %>%
-  rename(Proportion = `Proportion of Variance`, Cumulative = `Cumulative Proportion`)
-
-ggplot(scree[1:10,]) + geom_col(aes(x=PC, y=Proportion, )) +
-geom_line(aes(x=PC, y=Cumulative), color='red', size=1, group=1) +
-      geom_point(aes(x=PC, y=Cumulative), color='red', size=3) + theme_bw()
+# scree <- summary(pc_out)[["importance"]][2:3,]
+# scree <- as.data.frame(t(scree))
+# scree <- scree %>%
+#   rownames_to_column(var="PC") %>%
+#   mutate(PC = factor(PC, levels=PC)) %>%
+#   rename(Proportion = `Proportion of Variance`, Cumulative = `Cumulative Proportion`)
+# 
+# ggplot(scree[1:10,]) + geom_col(aes(x=PC, y=Proportion, )) +
+# geom_line(aes(x=PC, y=Cumulative), color='red', size=1, group=1) +
+#       geom_point(aes(x=PC, y=Cumulative), color='red', size=3) + theme_bw()
 
 # ggsave("figs/strict-tumor-scree-plot.png")
 ```
