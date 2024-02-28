@@ -130,12 +130,39 @@ ggplot(plot_detect, aes(x = as.factor(Freq), y = Rate, fill = Rate)) +
 negativeProbefData <- subset(fData(tdd), CodeClass == "Negative")
 neg_probes <- unique(negativeProbefData$TargetName)
 
-tumor_demoData <- 
-    tdd[fData(tdd)$DetectionRate >= 0.2 |
-                        fData(tdd)$TargetName %in% neg_probes, ]
+tumor_demoData <- tdd[fData(tdd)$DetectionRate >= 0.2 | fData(tdd)$TargetName %in% neg_probes, ]
+
+# remove outlier
+tumor_demoData <- tumor_demoData[, !rownames(pData(tumor_demoData)) %in% c("DSP-1001660005648-A-C03.dcc")]
 
 dim(tumor_demoData)
 dplyr::count(pData(tumor_demoData), SAMPLE_ID)
+```
+
+```{r pam50}
+library(genefu)
+data(pam50)
+
+ddata <- read.csv('tables/tumor-pam50-normalized.csv', row.names = 1)
+ddata <- t.data.frame(ddata)
+oldnames <- gsub("\\.","-",rownames(ddata))
+
+replace_dcc <- function(x){
+  gsub('.{4}$', '.dcc', x)
+}
+
+newnames <- sapply(oldnames, FUN=replace_dcc)
+rownames(ddata) <- newnames 
+
+ddemo <- pData(tumor_demoData)
+dannot <- fData(tumor_demoData) %>%
+  dplyr::rename(EntrezGene.ID = GeneID) %>%
+  dplyr::rename(probe = TargetName) %>%
+  dplyr::filter(probe %in% colnames(ddata))
+
+PAM50Preds<-intrinsic.cluster.predict(sbt.model=pam50, data=ddata,
+                                         annot=dannot,do.mapping=TRUE,
+                                         verbose=TRUE)
 ```
 
 ```{r Tumor_Q3_norm}
@@ -181,9 +208,6 @@ btm_row <- plot_grid(plt2, plt3, nrow = 1, labels = c("B", ""),
                      rel_widths = c(0.43,0.57))
 plot_grid(plt1, btm_row, ncol = 1, labels = c("A", ""))
 
-# remove outlier
-tumor_demoData <- tumor_demoData[, !rownames(pData(tumor_demoData)) %in% c("DSP-1001660005648-A-C03.dcc")]
-
 tumor_demoData <- normalize(tumor_demoData,
                              norm_method = "quant", 
                              desiredQuantile = .75,
@@ -211,6 +235,7 @@ boxplot(assayDataElement(tumor_demoData, elt="q_norm"),
 axis(side=1, tick=FALSE)
 
 # dev.off()
+
 # write.csv(assayDataElement(tumor_demoData, elt="exprs"), "tables/strict-tumor-raw-counts.csv")
 # write.csv(assayDataElement(tumor_demoData, elt="q_norm"), "tables/strict-tumor-q3-normalized-counts.csv")
 # write.csv(assayDataElement(tumor_demoData, elt="log_q"), "tables/strict-tumor-log-normalized-counts.csv")
@@ -218,23 +243,8 @@ axis(side=1, tick=FALSE)
 ```
 
 ```{r pam50}
-library(genefu)
-data(pam50.robust)
-
-
-ddata <- t(exprs(tumor_demoData)) 
-ddemo <- pData(tumor_demoData)
-dannot <- fData(tumor_demoData) %>%
-  dplyr::rename(EntrezGene.ID = GeneID) %>%
-  dplyr::rename(probe = TargetName)
-dannot[dannot$probe == 'ESR1',]
-
-PAM50Preds<-intrinsic.cluster.predict(sbt.model=pam50, data=ddata,
-                                         annot=dannot, do.mapping=TRUE,
-                                         verbose=TRUE)
-
-pData(tumor_demoData)$PAM50 <- PAM50Preds$subtype
-# write.csv(subset(pData(tumor_demoData), select=-c(LOQ)), "tables/nopdx/tumor-metadata-pam50.csv")
+pData(tumor_demoData)$PAM50 <- PAM50Preds$subtype[rownames(pData(tumor_demoData))]
+write.csv(subset(pData(tumor_demoData), select=-c(LOQ)), "tables/nopdx/tumor-metadata-pam50.csv")
 ```
 
 ```{r PCA_filtered_genes}
@@ -264,15 +274,15 @@ pData(tumor_demoData)[, c("PC1", "PC2")] <- pc_out$x[,c("PC1", "PC2")]
 
 # dplyr::count(temp, SITE, MATCH)
              
-ggplot(pData(tumor_demoData),
-       aes(x = PC1, y = PC2, color=`PAM50`)) +
-    geom_point(size = 2) +
+ggplot(pData(tumor_demoData[, pData(tumor_demoData)$SITE == 'Brain']),
+       aes(x = PC1, y = PC2, color=`Overall Subtype Primary`, shape=PAM50)) +
+    geom_point(size = 4) +
     theme_bw() +
     xlab(paste("PC1 (", 100*summary(pc_out)[["importance"]][2,1], "%)", sep="")) +
     ylab(paste("PC2 (", 100*summary(pc_out)[["importance"]][2,2], "%)", sep="")) # +
     # scale_color_manual(values=c(None='grey', BCBM_1='purple', BCBM_22='green', BCBM_27='red'))
 
-# ggsave("figs/nopdx/tumor-pca-by-pam50.png", height=15, width=15, unit="in")
+# ggsave("figs/nopdx/tumor-brain-pca-by-primary-subtype.png", height=10, width=10, unit="in")
 
 # scree <- summary(pc_out)[["importance"]][2:3,]
 # scree <- as.data.frame(t(scree))

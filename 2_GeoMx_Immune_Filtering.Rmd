@@ -134,9 +134,36 @@ ggplot(plot_detect, aes(x = as.factor(Freq), y = Rate, fill = Rate)) +
 negativeProbefData <- subset(fData(tdd), CodeClass == "Negative")
 neg_probes <- unique(negativeProbefData$TargetName)
 
-immune_demoData <- 
-    tdd[fData(tdd)$DetectionRate >= 0.2 |
-                        fData(tdd)$TargetName %in% neg_probes, ]
+```
+
+```{r pam50}
+library(genefu)
+data(pam50.robust)
+
+ddata <- read.csv('tables/immune-pam50-normalized.csv', row.names = 1)
+ddata <- t.data.frame(ddata)
+oldnames <- gsub("\\.","-",rownames(ddata))
+
+replace_dcc <- function(x){
+  gsub('.{4}$', '.dcc', x)
+}
+
+newnames <- sapply(oldnames, FUN=replace_dcc)
+rownames(ddata) <- newnames 
+
+ddemo <- pData(immune_demoData)
+dannot <- fData(immune_demoData) %>%
+  dplyr::rename(EntrezGene.ID = GeneID) %>%
+  dplyr::rename(probe = TargetName) %>%
+  dplyr::filter(probe %in% colnames(ddata))
+
+PAM50Preds<-intrinsic.cluster.predict(sbt.model=pam50, data=ddata,
+                                         annot=dannot,do.mapping=TRUE,
+                                         verbose=TRUE)
+```
+
+```{r filter_probes}
+immune_demoData <- tdd[fData(tdd)$DetectionRate >= 0.2 | fData(tdd)$TargetName %in% neg_probes, ]
 
 dim(immune_demoData)
 dplyr::count(pData(immune_demoData), SAMPLE_ID)
@@ -301,22 +328,8 @@ ggplot(breast_abundances_melt, aes(fill=Celltype, y=Abundance, x=Patient)) + geo
 
 ```
 
-```{r pam50}
-library(genefu)
-data(pam50.robust)
-
-
-ddata <- t(exprs(immune_demoData)) 
-ddemo <- pData(immune_demoData)
-dannot <- fData(immune_demoData) %>%
-  dplyr::rename(EntrezGene.ID = GeneID) %>%
-  dplyr::rename(probe = TargetName)
-
-PAM50Preds<-intrinsic.cluster.predict(sbt.model=pam50, data=ddata,
-                                         annot=dannot,do.mapping=TRUE,
-                                         verbose=TRUE)
-
-pData(immune_demoData)$PAM50 <- PAM50Preds$subtype
+```{r write_metadata}
+pData(immune_demoData)$PAM50 <- PAM50Preds$subtype[rownames(pData(immune_demoData))]
 # write.csv(subset(pData(immune_demoData), select=-c(LOQ)), "tables/nopdx/immune-metadata-pam50.csv")
 ```
 
@@ -339,17 +352,19 @@ brs <- sampleids %in% c("BCBM_1", "BCBM_22", "BCBM_27")
 sampleids[!brs] <- "None"
 temp$MATCH <- sampleids
 
+print(temp)
+
 dplyr::count(temp, SITE, MATCH)
              
-ggplot(temp,
-       aes(x = PC1, y = PC2, color=PAM50)) +
-    geom_point(size = 2) +
+ggplot(temp %>% filter(SITE == 'Breast'),
+       aes(x = PC1, y = PC2, color=`Overall Subtype Primary`, shape=PAM50)) +
+    geom_point(size = 4) +
     theme_bw() +
     xlab(paste("PC1 (", 100*summary(pc_out)[["importance"]][2,1], "%)", sep="")) +
     ylab(paste("PC2 (", 100*summary(pc_out)[["importance"]][2,2], "%)", sep="")) # +
     # scale_color_manual(values=c(None='grey', BCBM_1='purple', BCBM_22='green', BCBM_27='red'))
 
-# ggsave("figs/nopdx/immune-pca-by-pam50.png")
+# ggsave("figs/nopdx/immune-breast-pca-by-subtype.png", width=10, height=10, units="in")
 
 # scree <- summary(pc_out)[["importance"]][2:3,]
 # scree <- as.data.frame(t(scree))
